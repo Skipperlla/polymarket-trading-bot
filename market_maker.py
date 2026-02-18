@@ -147,6 +147,25 @@ def main():
                 return
             display_realtime_data()
 
+    def check_high_spread():
+        """Check if spread is over 0.05 for either outcome"""
+        up = realtime_data["UP"]
+        down = realtime_data["DOWN"]
+        
+        if up.get("spread") is not None and up["spread"] > 0.05:
+            now = datetime.now().strftime("%H:%M:%S")
+            print(f"⚠️  [{now}] HIGH SPREAD DETECTED - UP: {up['spread']:.4f} (Bid={up['bid']:.4f}, Ask={up['ask']:.4f})")
+            bot.place_limit_order_up(
+                token_ids=token_ids,
+                price=up["bid"],
+                size=1.0,
+                side="BUY"
+            )
+        
+        if down.get("spread") is not None and down["spread"] > 0.05:
+            now = datetime.now().strftime("%H:%M:%S")
+            print(f"⚠️  [{now}] HIGH SPREAD DETECTED - DOWN: {down['spread']:.4f} (Bid={down['bid']:.4f}, Ask={down['ask']:.4f})")
+
     def display_realtime_data():
         """Print one line with current best bids/asks for both tokens"""
         now = datetime.now().strftime("%H:%M:%S")
@@ -163,6 +182,9 @@ def main():
         )
 
         print(f"[{now}]  UP: {up_str}  |  DOWN: {down_str}")
+        
+        # Check for high spreads
+        check_high_spread()
 
     def on_connect():
         """Subscribe to both UP and DOWN tokens once connected"""

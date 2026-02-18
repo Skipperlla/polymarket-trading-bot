@@ -235,6 +235,54 @@ class PolymarketBot:
         return None
     
     
+    def place_market_order(
+        self,
+        token_id: str,
+        side: str,
+        size: float
+    ) -> Optional[Dict[Any, Any]]:
+        """
+        Place a market order on Polymarket CLOB
+        """
+        if not self.client:
+            print("Error: CLOB client not initialized.")
+            print("Possible reasons:")
+            print("  - Private key not provided or invalid")
+            print("  - py-clob-client not installed (pip install py-clob-client)")
+            print("  - CLOB client initialization failed (check error messages above)")
+            return None
+
+        if side.upper() not in ["BUY", "SELL"]:
+            print(f"Error: Invalid side '{side}'. Must be 'BUY' or 'SELL'")
+            return None
+        
+        if not (0.0 <= size <= 1.0):
+            print(f"Error: Size must be between 0.0 and 1.0, got {size}")
+            return None
+        
+        try:
+            # Create OrderArgs object
+            order = MarketOrderArgs(
+                token_id=token_id,
+                size=float(size),
+                side=BUY if side.upper() == "BUY" else SELL  # Must be "BUY" or "SELL" (uppercase)
+            )
+
+            # Create signed order
+            signed = self.client.create_market_order(order)
+
+            # Post order with order type
+            resp = self.client.post_order(signed, OrderType.IOC)
+            
+            print(f"Order placed successfully: {resp}")
+            return resp
+                
+        except Exception as e:
+            print(f"Error placing order: {e}")
+            import traceback
+            traceback.print_exc()
+            return None 
+    
     def place_limit_order(
         self,
         token_id: str,
@@ -358,3 +406,16 @@ class PolymarketBot:
             price=price,
             size=size
         )
+
+    def place_cancel_order(
+        self,
+        order_id: str
+    ) -> Optional[Dict[Any, Any]]:
+        """
+        Cancel an order on Polymarket CLOB
+        """
+        if not self.client:
+            print("Error: CLOB client not initialized.")
+            return None
+        
+        return self.client.cancel_order(order_id, OrderType.IOC)   
