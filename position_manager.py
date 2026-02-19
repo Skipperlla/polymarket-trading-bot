@@ -254,74 +254,32 @@ def process_market(bot: PolymarketBot, market: Dict[Any, Any], token_ids: Dict[s
 
         positions = bot.get_positions(token_ids)
 
-        
-        # Check if positions are equal
-        if are_positions_equal(positions):
-            print("\n✅ Positions are equal! Merging tokens...")
-            min_pos = get_min_position(positions)
-            
-            if min_pos > 0:
-                result = bot.merge_tokens(token_ids, min_pos)
-                if result:
-                    print(f"✅ Successfully merged {min_pos:.6f} tokens")
-                    print("\n➡️  Moving to next market...")
-                    # Get order parameters from environment
-                    order_price = float(os.getenv("ORDER_PRICE", "0.46"))
-                    order_size = float(os.getenv("ORDER_SIZE", "5.0"))
-                    
-                    next_market = bot.find_next_active_market()
-                    if next_market:
-                        next_token_ids = bot.get_token_ids(next_market)
-                        if next_token_ids:
-                            print(f"\n📋 Placing limit orders for next epoch market...")
-                            print(f"  Price: {order_price}, Size: {order_size}")
-                            up_order = bot.place_limit_order_up(
-                                token_ids=next_token_ids,
-                                price=order_price,
-                                size=order_size,
-                                side="BUY"
-                            )
-                            down_order = bot.place_limit_order_down(
-                                token_ids=next_token_ids,
-                                price=order_price,
-                                size=order_size,
-                                side="BUY"
-                            )
-                            if up_order or down_order:
-                                print("✅ Orders placed for next market")
-                            else:
-                                print("⚠️  Failed to place orders for next market")
-                            return True
-                        else:
-                            print("❌ Could not extract token IDs from next market. Moving to next market...")
-                            return True
-                    else:
-                        print("❌ Could not find next market. Moving to next market...")
-                        return True    
-                else:
-                    print("❌ Merge failed. Retrying in 60s...")
-                    time.sleep(60)
-                    continue
+        if positions["up_balance"] > 0.0 and positions["down_balance"] > 0.0:
+            result = bot.merge_tokens(token_ids, min(positions["up_balance"], positions["down_balance"]))
+            if result:
+                print(f"✅ Successfully merged {min(positions["up_balance"], positions["down_balance"]):.6f} tokens")
             else:
-                print("ℹ️  No positions to merge. Moving to next market...")
-                return True
+                print("❌ Merge failed. Retrying in 60s...")
+                continue
         
-        # Positions are not equal
-        print("\n⚠️  Positions are not equal")
         
         # Check if 30s before close
         if is_near_market_close(bot, market, seconds_before=30):
             print("⏰ Market closes in 30s or less. Force selling all positions...")
-            results = bot.force_sell_all(token_ids)
-            
-            up_sold = results["up_order"] is not None
-            down_sold = results["down_order"] is not None
-            
-            if up_sold or down_sold:
-                print("✅ Force sell completed")
-            else:
-                print("⚠️  No positions to sell")
-            
+            if positions["up_balance"] > 0.0:
+                results = bot.place_market_order(token_ids["up_token_id"], "SELL", positions["up_balance"])
+                if results:
+                    print("✅ Force sell completed")
+                else:
+                    print("❌ Force sell failed. Retrying in 60s...")
+                    continue
+            if positions["down_balance"] > 0.0:
+                results = bot.place_market_order(token_ids["down_token_id"], "SELL", positions["down_balance"])
+                if results:
+                    print("✅ Force sell completed")
+                else:
+                    print("❌ Force sell failed. Retrying in 60s...")
+                    continue
             print("\n➡️  Moving to next market...")
             # Place orders for next epoch market
             # Get order parameters from environment
@@ -346,21 +304,22 @@ def process_market(bot: PolymarketBot, market: Dict[Any, Any], token_ids: Dict[s
                         size=order_size,
                         side="BUY"
                     )
-                    if up_order or down_order:
-                        print("✅ Orders placed for next market")
+                    if up_order and down_order:
+                        print("✅ Orders placed for next market. Moving to next market...")
+                        return True
                     else:
                         print("⚠️  Failed to place orders for next market")
-                    return True
+                        return False
                 else:
-                    print("❌ Could not extract token IDs from next market. Moving to next market...")
-                    return True
+                    print("❌ Could not extract token IDs from next market.")
+                    return False
             else:
-                print("❌ Could not find next market. Moving to next market...")
-                return True
+                print("❌ Could not find next market. ")
+                return False
         
         # Wait 60s and recheck
-        print("⏳ Waiting 60s before rechecking...")
-        time.sleep(60)
+        print("⏳ Waiting 30s before rechecking...")
+        time.sleep(30)
 
 
 def main():
@@ -432,7 +391,7 @@ def main():
             
             # Wait a bit before moving to next market
             print("\n⏳ Waiting 10s before checking next market...")
-            time.sleep(10)
+            time.sleep(30)
             
     except KeyboardInterrupt:
         print("\n\n🛑 Bot stopped by user (Ctrl+C)")
