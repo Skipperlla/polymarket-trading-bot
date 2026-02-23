@@ -6,9 +6,6 @@
 
 📹 **Demo Video**: [Watch on YouTube](https://www.youtube.com/watch?v=DLhBdoVSUmk)
 
-## 📸 Screenshots
-
-![Polymarket 5min Trading Bot Interface](images/trading-bot-interface.png)
 
 *Bot interface showing real-time trading on Polymarket BTC 5-minute up/down market with position management console*
 
