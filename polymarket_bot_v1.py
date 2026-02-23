@@ -6,14 +6,34 @@ import os
 import time
 from datetime import datetime
 from typing import Optional, Dict, Any
-
+from dotenv import load_dotenv  # pyright: ignore[reportUnusedImport]
 import requests
 
 try:
-    from py_clob_client.clob_types import OrderType, OrderArgs  # pyright: ignore[reportMissingImports]
+    from web3 import Web3
+    from web3.constants import MAX_INT, HASH_ZERO
+    from web3.middleware import (geth_poa_middleware, construct_sign_and_send_raw_middleware)
+    from web3.gas_strategies.time_based import fast_gas_price_strategy
+    WEB3_AVAILABLE = True
+except ImportError as e:
+    WEB3_AVAILABLE = False
+    Web3 = None  # type: ignore
+    MAX_INT = None  # type: ignore
+    HASH_ZERO = "0x0000000000000000000000000000000000000000000000000000000000000000"
+    geth_poa_middleware = None  # type: ignore
+    construct_sign_and_send_raw_middleware = None  # type: ignore
+    fast_gas_price_strategy = None  # type: ignore
+    print(f"Warning: web3.py not installed. Install with: pip install web3 setuptools")
+    print(f"Import error: {e}")
+
+try:
+    from py_clob_client.clob_types import OrderType, OrderArgs, MarketOrderArgs  # pyright: ignore[reportMissingImports]
     from py_clob_client.client import ClobClient  # pyright: ignore[reportMissingImports]
     from py_clob_client.constants import POLYGON, ZERO_ADDRESS  # pyright: ignore[reportMissingImports]
     from py_clob_client.order_builder.constants import BUY, SELL  # pyright: ignore[reportMissingImports]
+    from py_builder_relayer_client.client import RelayClient  # pyright: ignore[reportMissingImports]
+    from py_builder_relayer_client.models import OperationType, SafeTransaction  # pyright: ignore[reportMissingImports]
+    from py_builder_signing_sdk.config import BuilderConfig, BuilderApiKeyCreds
     # Try to import MarketOrderArgs - may be in different location
     try:
         from py_clob_client.clob_types import MarketOrderArgs  # pyright: ignore[reportMissingImports]
@@ -29,6 +49,9 @@ except ImportError:
     ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
     OrderArgs = None  # type: ignore
     MarketOrderArgs = None  # type: ignore
+    RelayClient = None  # type: ignore
+    BuilderConfig = None  # type: ignore
+    BuilderApiKeyCreds = None  # type: ignore
     print("Warning: py-clob-client not installed. Install with: pip install py-clob-client")
 
 
@@ -59,6 +82,8 @@ class PolymarketBot:
         self.host = host
         self.private_key = private_key
         self.market = ""
+        self.relayer_url = os.getenv("RELAYER_URL")
+        
         # Ensure chain_id is an int; fall back to POLYGON if invalid
         resolved_chain_id = chain_id if chain_id is not None else POLYGON
         try:
@@ -67,21 +92,51 @@ class PolymarketBot:
             print(f"Warning: Invalid chain_id '{resolved_chain_id}', defaulting to POLYGON ({POLYGON})")
             self.chain_id = POLYGON
 
+        # Initialize builder config and relayer client if available
+        if (BuilderConfig is not None and BuilderApiKeyCreds is not None and RelayClient is not None 
+            and self.relayer_url is not None):
+            try:
+                self.builder_config = BuilderConfig(
+                    local_builder_creds = BuilderApiKeyCreds(
+                        key = os.getenv("BUILDER_API_KEY"),
+                        secret = os.getenv("BUILDER_SECRET"),
+                        passphrase = os.getenv("BUILDER_PASS_PHRASE"),
+                    )
+                )
+                self.relayer_client = RelayClient(self.relayer_url, self.chain_id, self.private_key, self.builder_config)
+            except Exception as e:
+                print(f"Warning: Failed to initialize relayer client: {e}")
+                self.builder_config = None
+                self.relayer_client = None
+        else:
+            self.builder_config = None
+            self.relayer_client = None
+            if self.relayer_url is None:
+                print("Warning: RELAYER_URL not set. Builder relayer client not available.")
+            else:
+                print("Warning: Builder relayer client not available. Install required packages.")
+
         self.signature_type = int(signature_type) if signature_type is not None else None
         self.funder = funder
         print(f"Host: {self.host}")
         print(f"Funder: {self.funder}")
         print(f"Chain ID: {self.chain_id}")
         print(f"Signature Type: {self.signature_type}")
-        self.client = ClobClient(
-            self.host,
-            key=self.private_key,
-            chain_id=self.chain_id,
-            signature_type=self.signature_type,
-            funder=self.funder
-        )
-        self.client.set_api_creds(self.client.create_or_derive_api_creds())
-        print("CLOB client initialized successfully")
+        
+        # Initialize CLOB client if available
+        if ClobClient is not None:
+            self.client = ClobClient(
+                self.host,
+                key=self.private_key,
+                chain_id=self.chain_id,
+                signature_type=self.signature_type,
+                funder=self.funder
+            )
+            self.client.set_api_creds(self.client.create_or_derive_api_creds())
+            print("CLOB client initialized successfully")
+        else:
+            self.client = None
+            print("Warning: CLOB client not available. Install py-clob-client package.")
 
     def get_current_timestamp(self) -> int:
         """Get current Unix timestamp"""
@@ -238,7 +293,7 @@ class PolymarketBot:
         
         slug = self.generate_slug(market_timestamp)
         market = self.find_active_market(slug)
-        self.market = market
+        self.market = market.get("markets")[0].get("conditionId")
         if market:
             print(f"Found current active market: {slug}")
             return market
@@ -268,32 +323,21 @@ class PolymarketBot:
             print(f"Error: Invalid side '{side}'. Must be 'BUY' or 'SELL'")
             return None
         
-        if not (0.0 <= size <= 1.0):
-            print(f"Error: Size must be between 0.0 and 1.0, got {size}")
-            return None
-        
         try:
             # Create OrderArgs object for market order
             # MarketOrderArgs might be the same as OrderArgs or a separate class
-            if MarketOrderArgs and MarketOrderArgs != OrderArgs:
-                order = MarketOrderArgs(
-                    token_id=token_id,
-                    size=float(size),
-                    side=BUY if side.upper() == "BUY" else SELL
-                )
-            else:
+            order = MarketOrderArgs(
+                token_id=token_id,
+                amount=float(size),
+                side=BUY if side.upper() == "BUY" else SELL,
+                order_type=OrderType.FOK
+            )
                 # Use OrderArgs if MarketOrderArgs is not available
-                order = OrderArgs(
-                    token_id=token_id,
-                    size=float(size),
-                    side=BUY if side.upper() == "BUY" else SELL
-                )
-
             # Create signed order
             signed = self.client.create_market_order(order)
 
             # Post order with order type
-            resp = self.client.post_order(signed, OrderType.IOC)
+            resp = self.client.post_order(signed, OrderType.FOK)
             
             print(f"Order placed successfully: {resp}")
             return resp
@@ -441,25 +485,70 @@ class PolymarketBot:
             return None
         
         return self.client.cancel_order(order_id, OrderType.IOC)   
-        
-
+         
     def merge_tokens(
         self,
-        token_ids: Dict[str, str], amount: float
-        ) -> Optional[Dict[Any, Any]]:
-            """
-            Merge tokens on Polymarket CLOB
-            """
-            if not self.client:
-                print("Error: CLOB client not initialized.")
-                return None
-            try:
-                return self.client.merge_tokens(token_ids['up_token_id'], token_ids['down_token_id'], amount)   
-            except Exception as e:
-                print(f"Error merging tokens: {e}")
-                import traceback
-                traceback.print_exc()
-                return None
+        token_ids: Dict[str, str],
+        amount: int,
+        condition_id: str
+    ) -> Optional[Dict[Any, Any]]:
+        if not self.relayer_client:
+            print("Error: Relayer client not initialized. Cannot merge tokens.")
+            return None
+
+        if not WEB3_AVAILABLE or Web3 is None:
+            print("Error: Web3 not available. Cannot merge tokens.")
+            return None
+
+        try:
+            client = self.relayer_client
+            merge_abi = [{
+            "name": "mergePositions",
+            "type": "function",
+            "inputs": [
+                {"name": "collateralToken", "type": "address"},
+                {"name": "parentCollectionId", "type": "bytes32"},
+                {"name": "conditionId", "type": "bytes32"},
+                {"name": "partition", "type": "uint256[]"},
+                {"name": "amount", "type": "uint256"}
+            ],
+            "outputs": []
+            }]
+
+            # Ensure condition_id has 0x prefix
+            if not condition_id.startswith("0x"):
+                condition_id = "0x" + condition_id
+
+            # Create Web3 instance for encoding (no provider needed for encoding)
+            w3 = Web3()
+            contract = w3.eth.contract(
+                address="0x4D97DCd97eC945f40cF65F87097ACe5EA0476045", 
+                abi=merge_abi
+            )
+            
+            # Use encodeABI (camelCase) which is the correct method name in web3.py
+            encoded_data = contract.encodeABI(
+                fn_name="mergePositions",
+                args=["0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", bytes(32), condition_id, [1, 2], amount]
+            )
+
+            merge_tx = {
+                "to": "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045",
+                "data": encoded_data,
+                "value": "0"
+            }
+
+            response = client.execute([merge_tx], "Merge positions")
+            response.wait()
+            print(f"Merge transaction hash: {response.transaction_hash}")
+            print("Merge complete!")
+            return response
+        except Exception as e:
+            print(f"Error merging tokens: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
     
     def get_balance(self, token_id: str) -> float:
         """
@@ -473,18 +562,16 @@ class PolymarketBot:
         """
         if not self.client:
             return 0.0
-        
         params = {
             "market": self.market,
             "status": "OPEN",
             "limit": 50,
             "user": os.getenv("FUNDER")
         }
-
         url = os.getenv("GET_POSITION_URL")
         try:
             response = requests.get(url, params=params, timeout=10)
-            if response.text != "[]":
+            if response.text != []:
                 data = response.json()
                 if data[0]["token"] == token_id:
                     return float(data[0]["positions"][0]["size"])
@@ -494,7 +581,7 @@ class PolymarketBot:
                 print("No data found for token_id: ", token_id)
                 return 0.0
         except Exception as e:
-                print(f"Error getting balance for {token_id}: {e}")
+
                 return 0.0
    
     
@@ -513,8 +600,8 @@ class PolymarketBot:
         
         up_balance = self.get_balance(token_ids.get("up_token_id"))
         down_balance = self.get_balance(token_ids.get("down_token_id"))
-        print("up_balance", up_balance)
-        print("down_balance", down_balance)
+        print("up_balance", up_balance * 10 ** 6)
+        print("down_balance", down_balance * 10 ** 6)
         return {
             "up_balance": up_balance,
             "down_balance": down_balance

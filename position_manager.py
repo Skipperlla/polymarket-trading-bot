@@ -13,7 +13,7 @@ Flow:
      - [30s before close?] → FORCE SELL → NEXT MARKET
      - [No] → WAIT 60s → RECHECK
 """
-
+import requests
 import os
 import time
 from datetime import datetime
@@ -33,8 +33,8 @@ except ImportError:
     WEB3_AVAILABLE = False
     print("Warning: web3.py not installed. Install with: pip install web3")
 
-from polymarket_bot import PolymarketBot
 
+from src.service.polymarket_bot import PolymarketBot
 
 def format_time(seconds: int) -> str:
     """Format seconds into readable time string"""
@@ -183,7 +183,7 @@ def get_min_position(positions: Dict[str, float]) -> float:
     return min(up, down)
 
 
-def is_near_market_close(bot: PolymarketBot, market: Dict[Any, Any], seconds_before: int = 30) -> bool:
+def is_near_market_close( close_time: int, seconds_before: int = 30) -> bool:
     """
     Check if market is closing within specified seconds
     
@@ -195,12 +195,12 @@ def is_near_market_close(bot: PolymarketBot, market: Dict[Any, Any], seconds_bef
     Returns:
         True if market closes within seconds_before
     """
-    close_time = bot.get_market_close_time(market)
+    close_time = close_time
     if not close_time:
         # If we can't determine close time, assume not close
         return False
     
-    current_time = bot.get_current_timestamp()
+    current_time = time.time()
     time_until_close = close_time - current_time
     
     return time_until_close <= seconds_before
@@ -229,7 +229,8 @@ def process_market(bot: PolymarketBot, market: Dict[Any, Any], token_ids: Dict[s
         return False
     
     # Get market close time
-    close_time = bot.get_market_close_time(market)
+    dt = datetime.fromisoformat(market.get("endDate").replace("Z", "+00:00"))
+    close_time = int(dt.timestamp())
     if close_time:
         close_dt = datetime.fromtimestamp(close_time)
         print(f"⏰ Market closes at: {close_dt.strftime('%H:%M:%S')}")
@@ -241,85 +242,152 @@ def process_market(bot: PolymarketBot, market: Dict[Any, Any], token_ids: Dict[s
     while True:
         iteration += 1
         current_time = bot.get_current_timestamp()
-        
+        close_flag = False
         if close_time:
             time_until_close = close_time - current_time
             if time_until_close > 0:
                 print(f"\n⏱️  Time until close: {format_time(time_until_close)}")
             else:
+                close_flag = True
                 print(f"\n⏱️  Market has closed")
         
         # Check positions
         print(f"\n📈 Checking positions (iteration {iteration})...")
 
-        positions = bot.get_positions(token_ids)
+        positions = get_positions(bot, token_ids)
 
         if positions["up_balance"] > 0.0 and positions["down_balance"] > 0.0:
-            result = bot.merge_tokens(token_ids, min(positions["up_balance"], positions["down_balance"]))
-            if result:
-                print(f"✅ Successfully merged {min(positions["up_balance"], positions["down_balance"]):.6f} tokens")
-            else:
-                print("❌ Merge failed. Retrying in 60s...")
-                continue
+            if not close_flag:
+            # Store market in bot for conditionId extraction
+                merge_amount = min(positions["up_balance"], positions["down_balance"])
+                print(f"Merge amount: {merge_amount}")
+                result = bot.merge_tokens(bot.current_market_id, int(merge_amount * 10 ** 6))
+                if result:
+                    print(f"✅ Successfully merged {merge_amount:.6f} tokens")
+                else:
+                    print("❌ Merge failed. Retrying in 60s...")
+                    time.sleep(30)
+                    continue
         
         
         # Check if 30s before close
-        if is_near_market_close(bot, market, seconds_before=30):
+        if is_near_market_close(close_time, seconds_before=30):
             print("⏰ Market closes in 30s or less. Force selling all positions...")
-            if positions["up_balance"] > 0.0:
-                results = bot.place_market_order(token_ids["up_token_id"], "SELL", positions["up_balance"])
-                if results:
-                    print("✅ Force sell completed")
-                else:
-                    print("❌ Force sell failed. Retrying in 60s...")
-                    continue
-            if positions["down_balance"] > 0.0:
-                results = bot.place_market_order(token_ids["down_token_id"], "SELL", positions["down_balance"])
-                if results:
-                    print("✅ Force sell completed")
-                else:
-                    print("❌ Force sell failed. Retrying in 60s...")
-                    continue
-            print("\n➡️  Moving to next market...")
-            # Place orders for next epoch market
-            # Get order parameters from environment
-            order_price = float(os.getenv("ORDER_PRICE", "0.46"))
-            order_size = float(os.getenv("ORDER_SIZE", "5.0"))
-            
-            next_market = bot.find_next_active_market()
-            if next_market:
-                next_token_ids = bot.get_token_ids(next_market)
-                if next_token_ids:
-                    print(f"\n📋 Placing limit orders for next epoch market...")
-                    print(f"  Price: {order_price}, Size: {order_size}")
-                    up_order = bot.place_limit_order_up(
-                        token_ids=next_token_ids,
-                        price=order_price,
-                        size=order_size,
-                        side="BUY"
-                    )
-                    down_order = bot.place_limit_order_down(
-                        token_ids=next_token_ids,
-                        price=order_price,
-                        size=order_size,
-                        side="BUY"
-                    )
-                    if up_order and down_order:
-                        print("✅ Orders placed for next market. Moving to next market...")
-                        return True
+            if not close_flag:
+                if positions["up_balance"] > 0.0:
+                    results = bot.place_market_order(token_ids["up_token_id"], "SELL", positions["up_balance"])
+                    if results:
+                        print("✅ Force sell completed")
                     else:
-                        print("⚠️  Failed to place orders for next market")
+                        print("❌ Force sell failed. Retrying in 60s...")
+                        time.sleep(1)
+                        continue
+                if positions["down_balance"] > 0.0:
+                    results = bot.place_market_order(token_ids["down_token_id"], "SELL", positions["down_balance"])
+                    if results:
+                        print("✅ Force sell completed")
+                    else:
+                        print("❌ Force sell failed. Retrying in 60s...")
+                        time.sleep(1)
+                        continue
+                print("\n➡️  Moving to next market...")
+                # Place orders for next epoch market
+                # Get order parameters from environment
+                order_price = float(os.getenv("ORDER_PRICE", "0.46"))
+                order_size = float(os.getenv("ORDER_SIZE", "5.0"))
+                
+                next_market = bot.find_next_active_market()
+                if next_market:
+                    next_token_ids = bot.get_token_ids(next_market)
+                    if next_token_ids:
+                        print(f"\n📋 Placing limit orders for next epoch market...")
+                        print(f"  Price: {order_price}, Size: {order_size}")
+                        print(f"  UP token: {next_token_ids['up_token_id']}")
+                        print(f"  DOWN token: {next_token_ids['down_token_id']}")
+                        up_order = bot.place_limit_order(
+                            token_id=next_token_ids["up_token_id"],
+                            price=order_price,
+                            size=order_size,
+                            side="BUY"
+                        )
+                        down_order = bot.place_limit_order(
+                            token_id=next_token_ids["down_token_id"],
+                            price=order_price,
+                            size=order_size,
+                            side="BUY"
+                        )
+                        if up_order and down_order:
+                            print("✅ Orders placed for next market. Moving to next market...")
+                            return True
+                        else:
+                            print("⚠️  Failed to place orders for next market")
+                            return False
+                    else:
+                        print("❌ Could not extract token IDs from next market.")
                         return False
                 else:
-                    print("❌ Could not extract token IDs from next market.")
+                    print("❌ Could not find next market. ")
                     return False
-            else:
-                print("❌ Could not find next market. ")
-                return False
         
         # Wait 60s and recheck
         print("⏳ Waiting 30s before rechecking...")
         time.sleep(30)
+
+
+def get_positions_balance(bot: PolymarketBot, token_id: str) -> float:
+    """
+    Get balance for a specific token
+    
+    Args:
+        token_id: Token ID to check balance for
+        
+    Returns:
+        Balance as float, or 0.0 if error
+    """
+
+    params = {
+        "market": bot.current_market_id,
+        "status": "OPEN",
+        "limit": 50,
+        "user": bot.funder
+    }
+    url = os.getenv("GET_POSITION_URL")
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        if response.text != []:
+            data = response.json()
+            if data[0]["token"] == token_id:
+                return float(data[0]["positions"][0]["size"])
+            else:
+                return float(data[1]["positions"][0]["size"])
+        else:
+            print("No data found for token_id: ", token_id)
+            return 0.0
+    except Exception as e:
+
+            return 0.0
+
+def get_positions(bot: PolymarketBot, token_ids: Dict[str, str]) -> Dict[str, float]:
+    """
+    Get positions (balances) for both UP and DOWN tokens
+    
+    Args:
+        token_ids: Dictionary with 'up_token_id' and 'down_token_id'
+        
+    Returns:
+        Dictionary with 'up_balance' and 'down_balance'
+    """
+    if not token_ids:
+        return {"up_balance": 0.0, "down_balance": 0.0}
+    
+    up_balance = get_positions_balance(bot, token_ids.get("up_token_id"))
+    down_balance = get_positions_balance(bot, token_ids.get("down_token_id"))
+    print("up_balance", up_balance * 10 ** 6)
+    print("down_balance", down_balance * 10 ** 6)
+    return {
+        "up_balance": up_balance,
+        "down_balance": down_balance
+    }
 
 
 def main():
@@ -333,21 +401,31 @@ def main():
     
     host = os.getenv("HOST", "https://clob.polymarket.com")
     funder = os.getenv("FUNDER")
-    chain_id = os.getenv("CHAIN_ID")
-    signature_type = os.getenv("SIGNATURE_TYPE")
-    
+    chain_id = int(os.getenv("CHAIN_ID", 137))
+    signature_type = int(os.getenv("SIGNATURE_TYPE", 2))
+    builder_api_key=os.getenv("BUILDER_API_KEY")
+    builder_secret=os.getenv("BUILDER_SECRET")
+    builder_passphrase=os.getenv("BUILDER_PASS_PHRASE")
+    relayer_url=os.getenv("RELAYER_URL")
+
+
     # Initialize bot
     print("🤖 Initializing Position Manager Bot...")
     bot = PolymarketBot(
         private_key=private_key,
         host=host,
-        funder=funder,
+        relayer_url=relayer_url,
         chain_id=chain_id,
         signature_type=signature_type,
+        funder=funder,
+        builder_api_key=builder_api_key,
+        builder_secret=builder_secret,
+        builder_passphrase=builder_passphrase,
     )
-    
-    if not bot.client:
-        print("❌ CLOB client failed to initialize. Check credentials.")
+    print(bot.poly_client.is_available())
+    print(bot.relayer_client.is_available())
+    if not bot.poly_client.is_available() or not bot.relayer_client.is_available():
+        print("❌ poly client or relayer client failed to initialize. Check credentials.")
         return
     
     print("✅ Bot initialized successfully\n")
@@ -364,7 +442,7 @@ def main():
             
             # Find current market
             print("\n🔍 Finding current BTC 5-min market...")
-            market = bot.find_current_market()
+            market = bot.find_active_market()
             
             if not market:
                 print("❌ Could not find active market. Waiting 30s...")

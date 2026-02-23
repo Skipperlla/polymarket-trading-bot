@@ -1,41 +1,63 @@
 # Polymarket BTC 5-Minute Trading Bot
 
-A trading bot for Polymarket BTC 5-minute up/down markets.
+🤖 Automated trading bot for Polymarket BTC 5-minute up/down markets. Trade 24/7 with automated position management and risk controls.
 
-## Features
+📹 **Demo Video**: [Watch on YouTube](https://www.youtube.com/watch?v=DLhBdoVSUmk)
 
-- Generate market slugs from timestamps
-- Find active BTC 5-minute up/down markets
-- Automatically detect current market window
+## ✨ Features
 
-## Setup
+- 🔍 **Auto Market Discovery** - Finds active BTC 5-minute markets automatically
+- 📊 **Smart Position Management** - Monitors and balances UP/DOWN positions
+- 🛡️ **Risk Protection** - Auto-sells before market close to prevent losses
+- ⚡ **Continuous Trading** - Runs across multiple 5-minute market epochs
+- 💰 **Token Merging** - Automatically recovers USDC from equal positions
 
-1. Install dependencies:
+## 🚀 Quick Start
+
+1. **Install dependencies:**
 ```bash
 pip install -r requirements.txt
 ```
 
-2. Run the bot:
+2. **Configure `.env` file:**
+```bash
+PRIVATE_KEY=0x...              # Your wallet private key
+ORDER_PRICE=0.46               # Limit order price
+ORDER_SIZE=5.0                 # Order size
+```
+
+3. **Run the bot:**
 ```bash
 python main.py
 ```
 
-## Usage
+## 📋 How It Works
 
-The bot generates slugs in the format: `btc-updown-5m-{timestamp}`
+The bot continuously:
+1. Finds the current BTC 5-minute market
+2. Monitors UP/DOWN token positions
+3. Merges equal positions to recover USDC
+4. Force sells before market close (30s threshold)
+5. Places orders for the next market automatically
 
-Example:
-- Current timestamp: 1770885600
-- Generated slug: `btc-updown-5m-1770885600`
+## 🔧 Configuration
 
-## API Endpoints
+Key environment variables:
+- `PRIVATE_KEY` - Wallet private key (required)
+- `ORDER_PRICE` - Limit order price (default: 0.46)
+- `ORDER_SIZE` - Order size (default: 5.0)
+- `HOST` - CLOB API host (default: https://clob.polymarket.com)
 
-The bot uses Polymarket's public API:
-- Base URL: `https://clob.polymarket.com`
-- Markets endpoint: `https://clob.polymarket.com/markets/{slug}`
+## ⚠️ Security
 
-## Notes
+Never commit your `.env` file or private key. Keep credentials secure.
 
-- Markets are 5-minute intervals, so timestamps are rounded down to the nearest 5-minute mark
-- The bot tries both the current and previous 5-minute window to find active markets
+## 📚 Documentation
+
+See `WORKFLOW.md` for detailed workflow and `polymarket_bot_v1.py` for API reference.
+
+## 📞 Contact
+
+- **Telegram**: [@ddev05](https://t.me/ddev05)
+- **Video Demo**: [YouTube](https://www.youtube.com/watch?v=DLhBdoVSUmk)
 
