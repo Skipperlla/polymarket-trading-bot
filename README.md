@@ -2,9 +2,9 @@
 
 🤖 Automated trading bot for Polymarket BTC 5-minute up/down markets. Trade 24/7 with automated position management and risk controls.
 
-[![Polymarket 5min Trading Bot](https://img.youtube.com/vi/DLhBdoVSUmk/maxresdefault.jpg)](https://www.youtube.com/watch?v=teeMT-c4S3o=1)
+[![Polymarket 5min Trading Bot](https://img.youtube.com/vi/NsRDKPQrRIs/maxresdefault.jpg)](https://www.youtube.com/watch?v=NsRDKPQrRIs)
 
-📹 **Demo Video**: [Watch on YouTube](https://www.youtube.com/watch?v=teeMT-c4S3o)
+📹 **Demo Video**: [Watch on YouTube](https://www.youtube.com/watch?v=NsRDKPQrRIs)
 
 **You can check this bot workflow and how to get profit by using the TG bot within 10 min:** [S.E.I*ArbitrageBot](https://t.me/sei_arb_bot)
 
