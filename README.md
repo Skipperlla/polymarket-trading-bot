@@ -4,12 +4,13 @@
 
 ---
 
-🤖 Automated trading bot for Polymarket BTC 5-minute up/down markets. Trade 24/7 with two strategies:
+🤖 Automated trading bot for Polymarket BTC 5-minute up/down markets. Trade 24/7 with three strategies:
 
 | Strategy | Description | Bot |
 |----------|-------------|-----|
 | **Strategy 1** | Arbitrage at the middle of the market | [@sei_arb_bot](https://t.me/sei_arb_bot) (~30 min) |
 | **Strategy 2** | High-opportunity trading at end of market cycle | [@seitrading_bot](https://t.me/seitrading_bot) (~1 hour) |
+| **Strategy 3** | Buy one of both UP/DOWN; when liquidity changes, get winning shares for $0.01 |
 
 📹 **Lets see video** [Watch on YouTube](https://www.youtube.com/watch?v=teeMT-c4S3o)
 
@@ -70,6 +71,32 @@ High-opportunity trading at the end of the market cycle. **Try in ~1 hour:** [@s
 
 ---
 
+## Strategy 3: Win with $0.01 when liquidity shifts 
+
+**Strategy:** You generally buy **one of both** UP and DOWN. When market liquidity changes, you can get **winning shares bought with $0.01** – minimal risk, same crypto up/down market.
+
+### Screenshots
+
+| Result |
+|--------|
+| ![Result 2](assets/result2.png) |
+
+### Features
+
+- Ultra-low risk – target $0.01 per side (UP and/or DOWN)
+- Exploits liquidity shifts in the crypto 5-minute up/down market
+- When liquidity changes, winning shares can be had for $0.01
+- Same market structure; different entry (one or both sides at minimal size)
+
+### How It Works
+
+1. Finds the current crypto up/down market  
+2. Monitors liquidity – buys UP and/or DOWN (generally one of both) with ~$0.01  
+3. When liquidity has changed, positions bought at $0.01 can become winning shares  
+4. Redeems winning side or merges if both filled; repeats for the next market  
+
+---
+
 ## 🚀 Quick Start
 
 1. **Install dependencies:**
@@ -80,8 +107,8 @@ High-opportunity trading at the end of the market cycle. **Try in ~1 hour:** [@s
 2. **Configure `.env`:**
    ```bash
    PRIVATE_KEY=0x...    # Your wallet private key
-   ORDER_PRICE=0.46     # Limit order price
-   ORDER_SIZE=5.0       # Order size
+   ORDER_PRICE=0.01    # Limit order price
+   ORDER_SIZE=      # Order size
    ```
 
 3. **Run the bot:**
