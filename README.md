@@ -14,15 +14,7 @@
 
 📹 **Watch on YouTube**
 
-<style>
-.yt-thumb-wrap { position: relative; display: inline-block; }
-.yt-thumb-wrap .yt-play { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 68px; height: 48px; background: rgba(255, 0, 0, 0.9); border-radius: 12px; color: #fff; font-size: 24px; line-height: 48px; text-align: center; opacity: 0; transition: opacity 0.2s; }
-.yt-thumb-wrap:hover .yt-play { opacity: 1; }
-</style>
-<a href="https://www.youtube.com/watch?v=teeMT-c4S3o" class="yt-thumb-wrap" title="Watch on YouTube">
-  <img src="https://img.youtube.com/vi/teeMT-c4S3o/maxresdefault.jpg" alt="YouTube – Polymarket 5min Trading Bot" width="640">
-  <span class="yt-play">▶</span>
-</a>
+[![YouTube – Polymarket 5min Trading Bot](https://img.youtube.com/vi/teeMT-c4S3o/maxresdefault.jpg)](https://www.youtube.com/watch?v=teeMT-c4S3o)
 
 ---
 
