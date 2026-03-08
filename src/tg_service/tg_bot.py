@@ -451,7 +451,7 @@ async def cmd_engine(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     text = (
         f"🤖 *Trading Engine*{mode}\n\n"
         f"Status: {'🟢 Running' if is_running else '⚪ Stopped'}\n"
-        f"Strategy: {state.config.strategy.value}\n"
+        f"Strategy: {_escape_md(state.config.strategy.value)}\n"
         f"Order Size: ${state.config.order_size:.1f}\n"
     )
     if is_running and state.engine:
@@ -954,6 +954,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 # ──────────────────────────────────────────────────────────────────────
 
 
+def _escape_md(text: str) -> str:
+    """Escape Markdown special characters for Telegram."""
+    for ch in ("_", "*", "`", "["):
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
 async def _start_engine(q, paper: bool) -> None:
     # Stop existing engine if running
     if state.engine and state.engine.is_running:
@@ -961,10 +968,11 @@ async def _start_engine(q, paper: bool) -> None:
 
     engine = state.init_engine(paper=paper)
     mode = "📝 Paper" if paper else "🔴 LIVE"
+    strategy_name = _escape_md(state.config.strategy.value)
 
     await q.edit_message_text(
         f"🚀 Starting {mode} trading engine…\n\n"
-        f"Strategy: {state.config.strategy.value}\n"
+        f"Strategy: {strategy_name}\n"
         f"Order Size: ${state.config.order_size:.1f}\n"
         f"Scan Interval: {state.config.scan_interval_seconds}s",
         parse_mode="Markdown",
@@ -976,7 +984,7 @@ async def _start_engine(q, paper: bool) -> None:
 
     await q.edit_message_text(
         f"🟢 {mode} trading engine is *running*!\n\n"
-        f"Strategy: {state.config.strategy.value}\n"
+        f"Strategy: {strategy_name}\n"
         f"Order Size: ${state.config.order_size:.1f}\n"
         f"Max Positions: {state.config.max_positions}\n"
         f"Max Exposure: ${state.config.max_total_exposure:.0f}\n\n"
