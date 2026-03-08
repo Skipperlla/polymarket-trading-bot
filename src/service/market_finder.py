@@ -284,7 +284,7 @@ class MarketFinder:
         Generate the slug for a BTC 5-minute up/down market.
 
         Polymarket BTC 5m markets follow the pattern:
-            will-btc-go-up-or-down-5-min-{rounded_ts}
+            btc-updown-5m-{rounded_ts}
 
         The timestamp is rounded DOWN to the nearest 5-minute boundary.
 
@@ -299,7 +299,7 @@ class MarketFinder:
 
         # Round down to nearest 5-minute boundary (300 seconds)
         rounded = (timestamp // 300) * 300
-        return f"will-btc-go-up-or-down-5-min-{rounded}"
+        return f"btc-updown-5m-{rounded}"
 
     @staticmethod
     def next_btc_5m_timestamp() -> int:
@@ -336,10 +336,10 @@ class MarketFinder:
 
         rounded = (timestamp // 300) * 300
 
-        # Try several known slug patterns
+        # Try several known slug patterns (btc-updown-5m is the current primary format)
         slug_patterns = [
-            f"will-btc-go-up-or-down-5-min-{rounded}",
             f"btc-updown-5m-{rounded}",
+            f"will-btc-go-up-or-down-5-min-{rounded}",
             f"btc-5m-{rounded}",
         ]
 

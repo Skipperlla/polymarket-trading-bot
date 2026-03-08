@@ -58,7 +58,7 @@ class PolymarketBot:
         private_key: str,
         host: str = "https://clob.polymarket.com",
         chain_id: int = 137,
-        signature_type: int = 2,
+        signature_type: int = 0,
         funder: Optional[str] = None,
         relayer_url: Optional[str] = None,
         builder_api_key: Optional[str] = None,

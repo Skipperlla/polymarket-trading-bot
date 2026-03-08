@@ -330,7 +330,7 @@ class BotState:
         private_key = os.getenv("PRIVATE_KEY", "")
         host = os.getenv("HOST", "https://clob.polymarket.com")
         chain_id = int(os.getenv("CHAIN_ID", "137"))
-        signature_type = int(os.getenv("SIGNATURE_TYPE", "2"))
+        signature_type = int(os.getenv("SIGNATURE_TYPE", "0"))
         funder = os.getenv("FUNDER")
         relayer_url = os.getenv("RELAYER_URL")
 

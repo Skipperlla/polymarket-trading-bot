@@ -57,7 +57,7 @@ class PolyClient:
         private_key: str,
         host: str = "https://clob.polymarket.com",
         chain_id: int = 137,
-        signature_type: int = 2,
+        signature_type: int = 0,
         funder: Optional[str] = None,
     ):
         self.host = host

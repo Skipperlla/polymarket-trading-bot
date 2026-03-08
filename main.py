@@ -11,7 +11,7 @@ Environment variables:
   PRIVATE_KEY          – Required. Wallet private key for signing.
   HOST                 – CLOB API host (default: https://clob.polymarket.com)
   CHAIN_ID             – Polygon chain ID (default: 137)
-  SIGNATURE_TYPE       – 0=EOA, 1=Magic, 2=proxy (default: 2)
+  SIGNATURE_TYPE       – 0=EOA, 1=Magic, 2=proxy (default: 0)
   FUNDER               – Optional funder/proxy address.
   ORDER_PRICE          – Default limit price (default: 0.46)
   ORDER_SIZE           – Default order size in shares (default: 5.0)
@@ -77,7 +77,7 @@ def build_bot() -> PolymarketBot:
 
     host = os.getenv("HOST", "https://clob.polymarket.com")
     chain_id = int(os.getenv("CHAIN_ID", "137"))
-    signature_type = int(os.getenv("SIGNATURE_TYPE", "2"))
+    signature_type = int(os.getenv("SIGNATURE_TYPE", "0"))
     funder = os.getenv("FUNDER")
     relayer_url = os.getenv("RELAYER_URL")
 
