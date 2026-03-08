@@ -9,6 +9,3 @@ startCommand = "python -m src.tg_service.tg_bot"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 5
 healthcheckTimeout = 300
-
-[service]
-internalPort = 8080

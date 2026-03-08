@@ -1,23 +1,32 @@
 """
-Poly5M Telegram bot — Paper Trading, Real Trading, Wallet, Referrals, Settings, Help.
-Run from project root with .env containing TELEGRAM_BOT_TOKEN and MONGO_URI.
+Poly5M Telegram bot — Full working implementation.
 
-Note: Core skilled implementations (balance, bridge, user keys, withdrawal, token checks)
-are removed for public sharing. Implement your own or restore from private codebase.
+Features:
+  - Market search and browsing (trending, search by keyword)
+  - Paper trading and live trading via TradingEngine
+  - Position management (view, close)
+  - Wallet balance display
+  - Settings management (strategy, order size, price, risk params)
+  - Engine start/stop/status controls
+  - Trade notifications
+
+Run from project root:
+  python -m src.tg_service.tg_bot
+
+Requires env vars: TELEGRAM_BOT_TOKEN, PRIVATE_KEY
+Optional: MONGO_URI, PAPER_TRADING, STRATEGY, ORDER_SIZE, etc.
 """
 
 from __future__ import annotations
 
 import asyncio
-import html
 import logging
 import os
-import signal
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
+from typing import List, Optional
 
-logger = logging.getLogger("PolyArbBot5M")
+logger = logging.getLogger("PolyTradingBot")
 
 # Project root and src on path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -25,25 +34,28 @@ sys.path.insert(0, str(PROJECT_ROOT))
 os.chdir(PROJECT_ROOT)
 if str(PROJECT_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "src"))
+if str(PROJECT_ROOT.parent) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT.parent))
 
-# Load .env so TELEGRAM_BOT_TOKEN, MONGO_URI, etc. are set (repo root first, then src)
-from dotenv import load_dotenv
+# Load .env
+try:
+    from dotenv import load_dotenv
 
-load_dotenv(PROJECT_ROOT.parent / ".env")
-load_dotenv(PROJECT_ROOT / ".env")
+    load_dotenv(PROJECT_ROOT.parent / ".env")
+    load_dotenv(PROJECT_ROOT / ".env")
+except ImportError:
+    pass
 
 import yaml
 from telegram import (
     BotCommand,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    KeyboardButton,
     ReplyKeyboardMarkup,
     Update,
 )
 from telegram.error import BadRequest, Conflict, RetryAfter
 from telegram.ext import (
-    AIORateLimiter,
     Application,
     CallbackQueryHandler,
     CommandHandler,
@@ -52,597 +64,681 @@ from telegram.ext import (
     filters,
 )
 
-
-# Core skilled code removed for public sharing — use stubs
-def _stub_check_allowance(*a, **kw):
-    return False, "⚠️ Balance/allowance check implementation removed for public sharing."
-
-
-def _stub_fetch_balance(*a, **kw):
-    return 0.0
-
-
-async def _stub_fetch_deposit_addresses(*a, **kw):
-    return {}
-
-
-async def _stub_create_withdrawal_addresses(*a, **kw):
-    return {"error": "Withdrawal/bridge implementation removed for public sharing."}
-
-
 try:
-    from telegram_bot.balance import (
-        check_and_update_allowance_sync,
-        fetch_proxy_balance_sync,
-    )
+    from telegram.ext import AIORateLimiter
+
+    RATE_LIMITER_AVAILABLE = True
 except ImportError:
-    check_and_update_allowance_sync = _stub_check_allowance
-    fetch_proxy_balance_sync = _stub_fetch_balance
+    AIORateLimiter = None  # type: ignore
+    RATE_LIMITER_AVAILABLE = False
 
-try:
-    from telegram_bot.bridge import (
-        WITHDRAW_CHAINS,
-        create_withdrawal_addresses,
-        fetch_deposit_addresses,
-    )
-except ImportError:
-    fetch_deposit_addresses = _stub_fetch_deposit_addresses
-    create_withdrawal_addresses = _stub_create_withdrawal_addresses
-    WITHDRAW_CHAINS = {
-        "polygon": {"label": "Polygon", "tokens": {}},
-        "solana": {"label": "Solana", "tokens": {}},
-    }
+from src.service.market_finder import MarketFinder
+from src.service.polymarket_bot import PolymarketBot
+from src.service.trading_engine import Strategy, TradingConfig, TradingEngine
 
-try:
-    from telegram_bot.constants import (
-        BOT_TOKEN,
-        MAX_CONCURRENT_TRADING_SESSIONS,
-        MIN_DEPOSIT_USD,
-        MIN_WITHDRAWAL_USDC,
-        POSITION_MANAGER_SCRIPT,
-        PROJECT_ROOT,
-        REPO_ROOT,
-        TRADING_BINARY_DEFAULT,
-        TRADING_BINARY_RAW,
-        TRADING_SCRIPT,
-        UPGRADE_CONTACT,
-    )
-except ImportError:
-    BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    REPO_ROOT = PROJECT_ROOT
-    MIN_DEPOSIT_USD = 3
-    MIN_WITHDRAWAL_USDC = 5
-    TRADING_BINARY_RAW = ""
-    TRADING_BINARY_DEFAULT = PROJECT_ROOT / "scripts" / "test_5m_core"
-    TRADING_SCRIPT = PROJECT_ROOT / "scripts" / "test_5m_core.py"
-    POSITION_MANAGER_SCRIPT = PROJECT_ROOT / "scripts" / "position_manager.py"
-    UPGRADE_CONTACT = "Contact admin"
-    MAX_CONCURRENT_TRADING_SESSIONS = 10
+# ──────────────────────────────────────────────────────────────────────
+# Config from env
+# ──────────────────────────────────────────────────────────────────────
 
-try:
-    from telegram_bot.trial import can_use_real_trading, start_trial_if_needed
-except ImportError:
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+ADMIN_USER_IDS_RAW = os.getenv("ADMIN_USER_IDS", "")
+ADMIN_USER_IDS = set()
+if ADMIN_USER_IDS_RAW:
+    for uid in ADMIN_USER_IDS_RAW.split(","):
+        uid = uid.strip()
+        if uid.isdigit():
+            ADMIN_USER_IDS.add(int(uid))
 
-    async def can_use_real_trading(uid):
-        return False, "Trial implementation removed for public sharing."
+# ──────────────────────────────────────────────────────────────────────
+# Keyboards
+# ──────────────────────────────────────────────────────────────────────
 
-    async def start_trial_if_needed(uid):
-        return None
+MAIN_MENU = ReplyKeyboardMarkup(
+    [
+        ["🤖 Trading Engine", "📊 Markets"],
+        ["💼 Positions", "👛 Wallet"],
+        ["⚙️ Settings", "📖 Help"],
+    ],
+    resize_keyboard=True,
+)
 
 
-try:
-    from telegram_bot.keyboards import (
-        MAIN_MENU,
-        TRADING_STOP_KEYBOARD,
-        help_inline,
-        referrals_inline,
-        settings_all_inline,
-        wallet_inline,
-        withdraw_chain_inline,
-        withdraw_confirm_inline,
-        withdraw_token_inline,
-    )
-except ImportError:
-    MAIN_MENU = ReplyKeyboardMarkup(
-        [["🔄 Arbitrage Bot"], ["👛 Wallet", "⚙️ Settings", "📖 Help"]],
-        resize_keyboard=True,
-    )
-    TRADING_STOP_KEYBOARD = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🛑 Stop", callback_data="trading:stop")]]
+def engine_inline(is_running: bool = False) -> InlineKeyboardMarkup:
+    if is_running:
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("🛑 Stop Engine", callback_data="engine:stop"),
+                    InlineKeyboardButton("📊 Status", callback_data="engine:status"),
+                ],
+                [
+                    InlineKeyboardButton(
+                        "💼 Positions", callback_data="engine:positions"
+                    ),
+                    InlineKeyboardButton("📜 History", callback_data="engine:history"),
+                ],
+                [InlineKeyboardButton("← Main Menu", callback_data="main")],
+            ]
+        )
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "📝 Start Paper", callback_data="engine:start_paper"
+                ),
+                InlineKeyboardButton(
+                    "🔴 Start Live", callback_data="engine:start_live"
+                ),
+            ],
+            [
+                InlineKeyboardButton("📊 Status", callback_data="engine:status"),
+            ],
+            [InlineKeyboardButton("← Main Menu", callback_data="main")],
+        ]
     )
 
-    def wallet_inline(*a):
-        return InlineKeyboardMarkup([])
 
-    def withdraw_chain_inline():
-        return InlineKeyboardMarkup([])
-
-    def withdraw_token_inline(*a):
-        return InlineKeyboardMarkup([])
-
-    def withdraw_confirm_inline():
-        return InlineKeyboardMarkup([])
-
-    def referrals_inline():
-        return InlineKeyboardMarkup([])
-
-    def help_inline():
-        return InlineKeyboardMarkup([])
-
-    def settings_all_inline(*a):
-        return InlineKeyboardMarkup([])
-
-
-async def _stub_get_private_key_and_funder(uid, path):
-    return ("", "", "")
+def markets_inline() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("🔥 Trending", callback_data="markets:trending"),
+                InlineKeyboardButton("🔍 Search", callback_data="markets:search"),
+            ],
+            [
+                InlineKeyboardButton("💰 Value Bets", callback_data="markets:value"),
+                InlineKeyboardButton(
+                    "⏰ Expiring Soon", callback_data="markets:expiring"
+                ),
+            ],
+            [
+                InlineKeyboardButton("₿ BTC 5min", callback_data="markets:btc5m"),
+            ],
+            [InlineKeyboardButton("← Main Menu", callback_data="main")],
+        ]
+    )
 
 
-async def _stub_ensure_private_key(uid):
-    pass
+def market_action_inline(market_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "📗 Buy Yes", callback_data=f"buy:{market_id}:yes"
+                ),
+                InlineKeyboardButton("📕 Buy No", callback_data=f"buy:{market_id}:no"),
+            ],
+            [
+                InlineKeyboardButton(
+                    "📊 Order Book", callback_data=f"book:{market_id}"
+                ),
+                InlineKeyboardButton("🔙 Back", callback_data="markets:trending"),
+            ],
+        ]
+    )
 
 
-async def _stub_update_user_meta(uid, **kw):
-    pass
+def settings_inline(config: TradingConfig) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    f"Strategy: {config.strategy.value}",
+                    callback_data="set:strategy",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    f"Order Size: ${config.order_size:.1f}",
+                    callback_data="set:order_size",
+                ),
+                InlineKeyboardButton(
+                    f"Order Price: ${config.order_price:.2f}",
+                    callback_data="set:order_price",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    f"Max Exposure: ${config.max_total_exposure:.0f}",
+                    callback_data="set:max_total_exposure",
+                ),
+                InlineKeyboardButton(
+                    f"Max Positions: {config.max_positions}",
+                    callback_data="set:max_positions",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    f"Max Daily Loss: ${config.max_daily_loss:.0f}",
+                    callback_data="set:max_daily_loss",
+                ),
+                InlineKeyboardButton(
+                    f"Stop Loss: {config.stop_loss_pct:.0%}",
+                    callback_data="set:stop_loss_pct",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    f"Scan Interval: {config.scan_interval_seconds}s",
+                    callback_data="set:scan_interval_seconds",
+                ),
+            ],
+            [InlineKeyboardButton("← Main Menu", callback_data="main")],
+        ]
+    )
 
 
-try:
-    from telegram_bot.user_keys import get_private_key_and_funder
-except ImportError:
-    get_private_key_and_funder = _stub_get_private_key_and_funder
+def strategy_inline() -> InlineKeyboardMarkup:
+    buttons = []
+    for s in Strategy:
+        buttons.append(
+            InlineKeyboardButton(s.value, callback_data=f"setstrategy:{s.value}")
+        )
+    rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton("← Back", callback_data="settings")])
+    return InlineKeyboardMarkup(rows)
 
 
-# Token check / approval — core implementation removed
-def _stub_check_token_status(*a, **kw):
-    return False, "⚠️ Token status check implementation removed for public sharing."
+# ──────────────────────────────────────────────────────────────────────
+# Telegram message helpers
+# ──────────────────────────────────────────────────────────────────────
 
-
-def _stub_ensure_approvals(*a, **kw):
-    return False, "⚠️ Token approval implementation removed for public sharing."
-
-
-# Subprocess/trading runner logic removed for public sharing
-
-# Telegram message limit; leave room for prefix and <pre> wrapper
 _TELEGRAM_MAX_TEXT = 4096
-_LOG_TAIL_LEN = 3400
-_STREAM_EDIT_INTERVAL = 1.5
-# Messages >512 bytes are treated as "large" by Telegram API and trigger stricter flood control (429)
-MAX_TELEGRAM_MESSAGE_BYTES = 512
 
 
-def _truncate_for_telegram(text: str, max_bytes: int = 500) -> str:
-    """Truncate text to fit within max_bytes (UTF-8). Avoids cutting mid-character."""
-    encoded = text.encode("utf-8")
-    if len(encoded) <= max_bytes:
+def _truncate(text: str, max_len: int = 4000) -> str:
+    if len(text) <= max_len:
         return text
-    n = max_bytes
-    while n > 0:
-        try:
-            return encoded[:n].decode("utf-8")
-        except UnicodeDecodeError:
-            n -= 1
-    return ""
+    return text[: max_len - 20] + "\n…(truncated)"
 
 
-def _sanitize_log_tail(tail: str) -> str:
-    """Remove control characters that can cause Telegram 400 (keep newline and tab)."""
-    return "".join(c for c in tail if c in "\n\t\r" or ord(c) >= 32)
+def _escape_md(text: str) -> str:
+    """Escape text for Telegram MarkdownV2 (but we use Markdown mode mostly)."""
+    return text
 
 
-def _collapse_ws_lines(tail: str) -> str:
-    """Replace each run of [WS] lines with only the latest one, keeping it among the other logs."""
-    lines = tail.split("\n")
-    result: list[str] = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if "[WS]" not in line:
-            result.append(line)
-            i += 1
-            continue
-        run = [line]
-        i += 1
-        while i < len(lines) and "[WS]" in lines[i]:
-            run.append(lines[i])
-            i += 1
-        result.append(run[-1])
-    return "\n".join(result)
+def _format_market(m: dict, index: int = 0) -> str:
+    """Format a market dict into a short summary string."""
+    info = MarketFinder.extract_market_info(m)
+    prefix = f"{index}. " if index > 0 else ""
+    prices = info.get("outcome_prices", [])
+    price_str = " / ".join(f"${p:.2f}" for p in prices) if prices else "N/A"
+    outcomes = info.get("outcomes", [])
+    outcome_str = " / ".join(outcomes) if outcomes else "Yes / No"
+
+    return (
+        f"{prefix}*{info['question'][:55]}*\n"
+        f"   ID: `{info['id']}` | {outcome_str}: {price_str}\n"
+        f"   Vol24h: ${info['volume_24h']:,.0f} | Liq: ${info['liquidity']:,.0f} | Spread: ${info['spread']:.3f}"
+    )
 
 
-def _truncate_log_message(prefix: str, tail: str) -> str:
-    """Build prefix + <pre>escaped(tail)</pre>. Collapse [WS] runs first so old logs stay, only bid/ask updates; truncate from start if over limit."""
-    tail = _collapse_ws_lines(tail)
-    clean = _sanitize_log_tail(tail)
-    escaped = html.escape(clean)
-    max_tail = _TELEGRAM_MAX_TEXT - len(prefix) - 20
-    if len(escaped) > max_tail:
-        escaped = escaped[-max_tail:]
-    return f"{prefix}\n<pre>{escaped}</pre>"
+def _format_market_detail(m: dict) -> str:
+    """Format a market dict into a detailed view."""
+    info = MarketFinder.extract_market_info(m)
+    prices = info.get("outcome_prices", [])
+    outcomes = info.get("outcomes", [])
+    token_ids = MarketFinder.extract_token_ids(m)
+
+    lines = [
+        f"📊 *{info['question']}*\n",
+        f"🆔 Market ID: `{info['id']}`",
+        f"🔑 Condition: `{info['condition_id']}`",
+        "",
+    ]
+
+    for i, (out, price) in enumerate(zip(outcomes, prices)):
+        lines.append(f"   {out}: *${price:.3f}*")
+
+    lines.extend(
+        [
+            "",
+            f"📈 Best Bid: ${info['best_bid']:.3f} | Ask: ${info['best_ask']:.3f}",
+            f"📉 Spread: ${info['spread']:.3f}",
+            f"💵 Last Trade: ${info['last_trade_price']:.3f}",
+            f"📊 Volume (24h): ${info['volume_24h']:,.2f}",
+            f"💧 Liquidity: ${info['liquidity']:,.2f}",
+            f"📅 End: {info.get('end_date', 'N/A')}",
+            f"✅ Accepting Orders: {'Yes' if info['accepting_orders'] else 'No'}",
+            f"📦 Min Size: {info['order_min_size']}",
+        ]
+    )
+
+    return "\n".join(lines)
 
 
-# _stream_subprocess_to_message and _kill_trading_process removed for public sharing
+# ──────────────────────────────────────────────────────────────────────
+# Bot state (per-application)
+# ──────────────────────────────────────────────────────────────────────
 
 
-async def _kill_trading_process(proc: asyncio.subprocess.Process) -> None:
-    """Stub — implementation removed for public sharing."""
-    pass
+class BotState:
+    """Holds shared state for the Telegram bot."""
+
+    def __init__(self):
+        self.bot: Optional[PolymarketBot] = None
+        self.engine: Optional[TradingEngine] = None
+        self.config: TradingConfig = TradingConfig.from_env()
+        self.finder: MarketFinder = MarketFinder()
+        self._trade_notifications: List[str] = []
+
+    def init_bot(self) -> PolymarketBot:
+        """Initialise the PolymarketBot if not already done."""
+        if self.bot is not None:
+            return self.bot
+
+        private_key = os.getenv("PRIVATE_KEY", "")
+        host = os.getenv("HOST", "https://clob.polymarket.com")
+        chain_id = int(os.getenv("CHAIN_ID", "137"))
+        signature_type = int(os.getenv("SIGNATURE_TYPE", "2"))
+        funder = os.getenv("FUNDER")
+        relayer_url = os.getenv("RELAYER_URL")
+
+        self.bot = PolymarketBot(
+            private_key=private_key,
+            host=host,
+            chain_id=chain_id,
+            signature_type=signature_type,
+            funder=funder,
+            relayer_url=relayer_url,
+            builder_api_key=os.getenv("BUILDER_API_KEY"),
+            builder_secret=os.getenv("BUILDER_SECRET"),
+            builder_passphrase=os.getenv("BUILDER_PASS_PHRASE"),
+            market_finder=self.finder,
+        )
+        return self.bot
+
+    def init_engine(self, paper: bool = True) -> TradingEngine:
+        """Initialise (or re-initialise) the TradingEngine."""
+        bot = self.init_bot()
+        self.config.paper_trading = paper
+
+        self.engine = TradingEngine(
+            poly_client=bot.poly_client if bot else None,
+            relayer_client=bot.relayer_client if bot else None,
+            market_finder=self.finder,
+            config=self.config,
+            on_trade_callback=self._on_trade,
+            on_status_callback=self._on_status,
+        )
+        return self.engine
+
+    def _on_trade(self, message: str):
+        self._trade_notifications.append(message)
+        # Keep only last 50
+        if len(self._trade_notifications) > 50:
+            self._trade_notifications = self._trade_notifications[-50:]
+        logger.info("[Trade] %s", message)
+
+    def _on_status(self, message: str):
+        logger.info("[Status] %s", message)
+
+    def pop_notifications(self) -> List[str]:
+        notes = list(self._trade_notifications)
+        self._trade_notifications.clear()
+        return notes
 
 
-# ---------- Per-user config (core implementation can be replaced) ----------
-def get_user_config_path(user_id: int) -> Path:
-    try:
-        from config.config import get_user_config_path as _get
-
-        return _get(user_id, PROJECT_ROOT)
-    except ImportError:
-        path = PROJECT_ROOT / "config" / "users" / f"{user_id}.yaml"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return path
+# Global state
+state = BotState()
 
 
-def ensure_user_config(user_id: int, username: str = "", name: str = "") -> Path:
-    try:
-        from config.config import ensure_user_config as _ensure
-
-        path = _ensure(user_id, PROJECT_ROOT)
-    except ImportError:
-        path = get_user_config_path(user_id)
-    meta = path.with_suffix(".meta")
-    if username or name:
-        meta.write_text(f"USERNAME={username}\nNAME={name}\n")
-    elif not meta.exists():
-        meta.write_text("USERNAME=\nNAME=\n")
-    return path
+# ──────────────────────────────────────────────────────────────────────
+# Command handlers
+# ──────────────────────────────────────────────────────────────────────
 
 
-def load_user_config(user_id: int) -> dict:
-    try:
-        from config.config import load_config
-
-        path = ensure_user_config(user_id)
-        settings = load_config(str(path))
-        return settings.model_dump()
-    except ImportError:
-        path = ensure_user_config(user_id)
-        if path.exists():
-            with open(path) as f:
-                return yaml.safe_load(f) or {}
-        return {"order": {}, "risk": {}, "execution": {}}
-
-
-def save_user_config(user_id: int, data: dict) -> None:
-    path = get_user_config_path(user_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        yaml.safe_dump(data, f, default_flow_style=False, allow_unicode=True)
-
-
-# ---------- Handlers ----------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     user_id = user.id
     username = user.username or ""
     name = user.full_name or user.first_name or ""
-    logger.info("User started bot: user_id=%s @%s", user_id, username)
-    ensure_user_config(user_id, username=username, name=name)
-    # Ensure user has a private key (core implementation removed for public sharing)
-    await _stub_ensure_private_key(user_id)
-    await _stub_update_user_meta(user_id, username=username, name=name)
-    await update.effective_message.reply_text(
-        "Welcome to **Poly5M**. Choose an action:",
-        reply_markup=MAIN_MENU,
-        parse_mode="Markdown",
+    logger.info("User started bot: user_id=%s @%s (%s)", user_id, username, name)
+
+    state.init_bot()
+
+    text = (
+        f"👋 Welcome to *Polymarket Trading Bot*, {name}!\n\n"
+        "I can help you:\n"
+        "• 🤖 Run autonomous trading (paper or live)\n"
+        "• 📊 Browse & search markets\n"
+        "• 💼 Manage positions\n"
+        "• 👛 Check wallet balance\n\n"
+        "Use the menu below to get started."
     )
+    await update.effective_message.reply_text(
+        text, reply_markup=MAIN_MENU, parse_mode="Markdown"
+    )
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = (
+        "📖 *Help — Polymarket Trading Bot*\n\n"
+        "*Commands:*\n"
+        "/start — Start the bot\n"
+        "/engine — Trading engine controls\n"
+        "/markets — Browse markets\n"
+        "/search <query> — Search markets\n"
+        "/trending — Trending markets\n"
+        "/positions — View open positions\n"
+        "/wallet — Wallet balance\n"
+        "/settings — Bot settings\n"
+        "/status — Engine status\n"
+        "/help — This help message\n\n"
+        "*Trading Modes:*\n"
+        "• 📝 Paper Trading — Simulated with virtual balance\n"
+        "• 🔴 Live Trading — Real USDC orders via CLOB\n\n"
+        "*Strategies:*\n"
+        "• value\\_bet — Find underpriced outcomes\n"
+        "• spread\\_capture — Earn bid-ask spread\n"
+        "• momentum — Follow price trends\n"
+        "• btc\\_5m — BTC 5-minute up/down markets\n\n"
+        "*Safety:*\n"
+        "• Always test with paper trading first\n"
+        "• Set conservative risk limits\n"
+        "• Never share your PRIVATE\\_KEY"
+    )
+    await update.effective_message.reply_text(
+        text, reply_markup=MAIN_MENU, parse_mode="Markdown"
+    )
+
+
+async def cmd_engine(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    is_running = state.engine is not None and state.engine.is_running
+    mode = ""
+    if is_running:
+        mode = " (📝 Paper)" if state.config.paper_trading else " (🔴 LIVE)"
+    text = (
+        f"🤖 *Trading Engine*{mode}\n\n"
+        f"Status: {'🟢 Running' if is_running else '⚪ Stopped'}\n"
+        f"Strategy: {state.config.strategy.value}\n"
+        f"Order Size: ${state.config.order_size:.1f}\n"
+    )
+    if is_running and state.engine:
+        text += (
+            f"Positions: {state.engine.state.position_count}/{state.config.max_positions}\n"
+            f"P&L: ${state.engine.state.total_pnl:+.2f}\n"
+            f"Trades Today: {state.engine.state.trades_today}\n"
+        )
+    await update.effective_message.reply_text(
+        text, reply_markup=engine_inline(is_running), parse_mode="Markdown"
+    )
+
+
+async def cmd_markets(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = "📊 *Markets*\n\nChoose a category to browse:"
+    await update.effective_message.reply_text(
+        text, reply_markup=markets_inline(), parse_mode="Markdown"
+    )
+
+
+async def cmd_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.effective_message.reply_text(
+            "🔍 Usage: `/search <keyword>`\n\nExample: `/search bitcoin`",
+            parse_mode="Markdown",
+        )
+        return
+
+    query = " ".join(context.args)
+    await _do_search(update, query)
+
+
+async def _do_search(update: Update, query: str) -> None:
+    msg = await update.effective_message.reply_text(f"🔍 Searching for '{query}'…")
+
+    markets = await asyncio.to_thread(
+        state.finder.search_markets, query, 10, True, 0, 0
+    )
+
+    if not markets:
+        await msg.edit_text(
+            f"🔍 No markets found for '{query}'.\n\nTry a different keyword.",
+            parse_mode="Markdown",
+        )
+        return
+
+    lines = [f"🔍 *Search results for '{query}':*\n"]
+    for i, m in enumerate(markets[:8], 1):
+        lines.append(_format_market(m, i))
+        lines.append("")
+
+    text = _truncate("\n".join(lines))
+
+    # Build keyboard with market IDs for detail view
+    buttons = []
+    for m in markets[:8]:
+        mid = m.get("id", "")
+        q = (m.get("question") or "")[:25]
+        buttons.append(InlineKeyboardButton(f"📊 {q}", callback_data=f"mdetail:{mid}"))
+    rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton("← Markets", callback_data="markets_menu")])
+
+    await msg.edit_text(
+        text, reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown"
+    )
+
+
+async def cmd_trending(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _show_trending(update)
+
+
+async def _show_trending(update: Update, edit_message=None) -> None:
+    target = edit_message or update.effective_message
+    if edit_message is None:
+        msg = await target.reply_text("🔥 Loading trending markets…")
+    else:
+        msg = edit_message
+        await msg.edit_text("🔥 Loading trending markets…")
+
+    markets = await asyncio.to_thread(state.finder.get_trending_markets, 8, 500, 200)
+
+    if not markets:
+        await msg.edit_text("🔥 No trending markets found right now.")
+        return
+
+    lines = ["🔥 *Trending Markets*\n"]
+    for i, m in enumerate(markets[:8], 1):
+        lines.append(_format_market(m, i))
+        lines.append("")
+
+    text = _truncate("\n".join(lines))
+
+    buttons = []
+    for m in markets[:8]:
+        mid = m.get("id", "")
+        q = (m.get("question") or "")[:25]
+        buttons.append(InlineKeyboardButton(f"📊 {q}", callback_data=f"mdetail:{mid}"))
+    rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton("← Markets", callback_data="markets_menu")])
+
+    await msg.edit_text(
+        text, reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown"
+    )
+
+
+async def cmd_positions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not state.engine:
+        await update.effective_message.reply_text(
+            "💼 *Positions*\n\nNo trading engine running. Start one first!",
+            reply_markup=engine_inline(False),
+            parse_mode="Markdown",
+        )
+        return
+
+    summary = state.engine.get_positions_summary()
+    text = f"💼 *Open Positions*\n\n{summary}"
+    text = _truncate(text)
+
+    buttons = []
+    for key in list(state.engine.state.positions.keys())[:10]:
+        pos = state.engine.state.positions[key]
+        label = f"Close: {pos.question[:20]}"
+        buttons.append(InlineKeyboardButton(label, callback_data=f"close_pos:{key}"))
+    rows = [[b] for b in buttons]
+    rows.append([InlineKeyboardButton("← Main Menu", callback_data="main")])
+
+    await update.effective_message.reply_text(
+        text, reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown"
+    )
+
+
+async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    bot = state.init_bot()
+
+    text_parts = ["👛 *Wallet*\n"]
+
+    # USDC balance
+    try:
+        balance = await asyncio.to_thread(bot.get_balance)
+        if balance is not None:
+            text_parts.append(f"💰 USDC Balance: *${balance:.2f}*")
+        else:
+            text_parts.append("💰 USDC Balance: _(unavailable)_")
+    except Exception as exc:
+        text_parts.append(f"💰 USDC Balance: _(error: {exc})_")
+
+    # CLOB / relayer status
+    status = bot.get_status()
+    text_parts.extend(
+        [
+            "",
+            f"🔗 CLOB: {'✅ Connected' if status['poly_client_available'] else '❌ Unavailable'}",
+            f"⛓️ Relayer: {'✅ Connected' if status['relayer_available'] else '❌ Unavailable'}",
+            f"🌐 Host: `{status['host']}`",
+            f"🔢 Chain: {status['chain_id']}",
+        ]
+    )
+
+    # Paper balance
+    if state.engine:
+        text_parts.extend(
+            [
+                "",
+                f"📝 Paper Balance: *${state.engine.state.paper_balance:.2f}*",
+            ]
+        )
+
+    # Open orders count
+    try:
+        orders = await asyncio.to_thread(bot.get_open_orders)
+        text_parts.append(f"\n📋 Open Orders: {len(orders)}")
+    except Exception:
+        text_parts.append(f"\n📋 Open Orders: _(unavailable)_")
+
+    text = _truncate("\n".join(text_parts))
+    await update.effective_message.reply_text(
+        text, reply_markup=MAIN_MENU, parse_mode="Markdown"
+    )
+
+
+async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    text = (
+        "⚙️ *Settings*\n\n"
+        "Tap a setting to change it.\n"
+        "Current values are shown on each button."
+    )
+    await update.effective_message.reply_text(
+        text, reply_markup=settings_inline(state.config), parse_mode="Markdown"
+    )
+
+
+async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not state.engine:
+        await update.effective_message.reply_text(
+            "📊 *Status*\n\nNo trading engine running.",
+            reply_markup=engine_inline(False),
+            parse_mode="Markdown",
+        )
+        return
+
+    summary = state.engine.get_status_summary()
+    text = f"```\n{summary}\n```"
+    text = _truncate(text)
+    await update.effective_message.reply_text(
+        text, reply_markup=engine_inline(state.engine.is_running), parse_mode="Markdown"
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Menu text handler
+# ──────────────────────────────────────────────────────────────────────
 
 
 async def main_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (update.effective_message.text or "").strip()
     user_id = update.effective_user.id
 
+    # Handle pending setting input
     pending = context.user_data.get("pending_setting")
     if pending:
         del context.user_data["pending_setting"]
-        section, key = pending.split(".", 1)
-        cfg = load_user_config(user_id)
-        old_val = cfg.get(section, {}).get(key)
         try:
-            if section == "order" and key in ("price", "size"):
+            if pending in (
+                "order_size",
+                "order_price",
+                "max_total_exposure",
+                "max_daily_loss",
+                "stop_loss_pct",
+            ):
                 new_val = float(text)
-            elif section == "risk" and key == "stop_time":
-                new_val = int(text) if text.isdigit() else float(text)
-            elif isinstance(old_val, float):
-                new_val = float(text)
-            elif isinstance(old_val, int):
+            elif pending in ("max_positions", "scan_interval_seconds"):
                 new_val = int(text)
             else:
                 new_val = text
+
+            if hasattr(state.config, pending):
+                setattr(state.config, pending, new_val)
+                label = pending.replace("_", " ").title()
+                await update.effective_message.reply_text(
+                    f"✅ *{label}* updated to `{new_val}`",
+                    reply_markup=settings_inline(state.config),
+                    parse_mode="Markdown",
+                )
+                # Update engine config if running
+                if state.engine:
+                    state.engine.update_config(**{pending: new_val})
+            else:
+                await update.effective_message.reply_text(
+                    f"⚠️ Unknown setting: {pending}",
+                    parse_mode="Markdown",
+                )
         except (ValueError, TypeError):
             await update.effective_message.reply_text(
-                f"⚠️ Invalid value. Expected a number. Setting *{key.replace('_', ' ').title()}* unchanged.",
+                f"⚠️ Invalid value. Please enter a valid number.",
                 parse_mode="Markdown",
             )
-            return
-        cfg.setdefault(section, {})[key] = new_val
-        save_user_config(user_id, cfg)
-        label = key.replace("_", " ").title()
-        text = _truncate_for_telegram(f"✅ *{label}* → `{new_val}`\n\n{_SETTINGS_TEXT}")
-        await update.effective_message.reply_text(
-            text,
-            reply_markup=settings_all_inline(cfg),
-            parse_mode="Markdown",
-        )
         return
 
-    if context.user_data.get("pending_withdraw_address"):
-        del context.user_data["pending_withdraw_address"]
-        chain = context.user_data.get("withdraw_chain", "")
-        token = context.user_data.get("withdraw_token", "")
-        chain_info = WITHDRAW_CHAINS.get(chain, {})
-        chain_label = chain_info.get("label", chain)
-        token_sym = (
-            chain_info.get("tokens", {}).get(token, {}).get("symbol", token.upper())
-        )
-        recipient = text.strip()
-        # Basic validation
-        is_solana = chain == "solana"
-        if not is_solana and (not recipient.startswith("0x") or len(recipient) != 42):
-            await update.effective_message.reply_text(
-                "⚠️ Invalid EVM address. Must start with `0x` and be 42 characters.\nPlease try again:",
-                parse_mode="Markdown",
-            )
-            context.user_data["pending_withdraw_address"] = True
-            return
-        if is_solana and (len(recipient) < 32 or len(recipient) > 44):
-            await update.effective_message.reply_text(
-                "⚠️ Invalid Solana address. Please try again:",
-            )
-            context.user_data["pending_withdraw_address"] = True
-            return
-        context.user_data["withdraw_recipient"] = recipient
-        balance = context.user_data.get("withdraw_balance", 0.0)
-        await update.effective_message.reply_text(
-            f"📤 *Confirm Withdrawal*\n\n"
-            f"*Chain:* {chain_label}\n"
-            f"*Token:* {token_sym}\n"
-            f"*Recipient:* `{recipient}`\n"
-            f"*Available:* ${balance:.2f} USDC\n\n"
-            "Your full USDC.e balance will be bridged and swapped to "
-            f"{token_sym} on {chain_label}.\n\n"
-            "⚠️ Withdrawals are instant and free. Confirm to proceed.",
-            reply_markup=withdraw_confirm_inline(),
-            parse_mode="Markdown",
-        )
+    # Handle pending search
+    pending_search = context.user_data.get("pending_search")
+    if pending_search:
+        del context.user_data["pending_search"]
+        await _do_search(update, text)
         return
 
-    if text == "🔄 Arbitrage Bot":
-        logger.info("user_id=%s → Arbitrage bot", user_id)
-        await position_manager_run(update, context)
+    # Menu button routing
+    if text == "🤖 Trading Engine":
+        await cmd_engine(update, context)
+    elif text == "📊 Markets":
+        await cmd_markets(update, context)
+    elif text == "💼 Positions":
+        await cmd_positions(update, context)
     elif text == "👛 Wallet":
-        logger.info("user_id=%s → Wallet", user_id)
-        await wallet_screen(update, context)
+        await cmd_wallet(update, context)
     elif text == "⚙️ Settings":
-        logger.info("user_id=%s → Settings", user_id)
-        await settings_screen(update, context)
+        await cmd_settings(update, context)
     elif text == "📖 Help":
-        logger.info("user_id=%s → Help", user_id)
-        await help_screen(update, context)
+        await cmd_help(update, context)
     else:
         await update.effective_message.reply_text(
-            "Use the menu buttons below.", reply_markup=MAIN_MENU
+            "Use the menu buttons below 👇", reply_markup=MAIN_MENU
         )
 
 
-async def paper_trading(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Implementation removed for public sharing
-    await update.effective_message.reply_text(
-        "⚠️ Paper Trading implementation removed for public sharing.\n"
-        "Implement your own trading runner and subprocess logic.",
-        parse_mode="Markdown",
-    )
-
-
-async def real_trading(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Implementation removed for public sharing
-    await update.effective_message.reply_text(
-        "⚠️ Real Trading implementation removed for public sharing.\n"
-        "Implement your own token checks, approval flow, and trading subprocess.",
-        parse_mode="Markdown",
-    )
-
-
-async def position_manager_run(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """Arbitrage bot — implementation removed for public sharing."""
-    await update.effective_message.reply_text(
-        "⚠️ Arbitrage bot (merge/force-sell loop) implementation removed for public sharing.\n"
-        "Implement your own balance/allowance checks and position manager subprocess.",
-        parse_mode="Markdown",
-    )
-
-
-def _shorten_address(addr: str, head: int = 8, tail: int = 6) -> str:
-    """Abbreviate address to stay under Telegram 512-byte limit (e.g. 0x1234...abcd)."""
-    if not addr or len(addr) <= head + tail + 3:
-        return addr
-    return f"{addr[:head]}...{addr[-tail:]}"
-
-
-def _deposit_wallets_text(
-    evm: str, svm: str, btc: str = "", load_error: bool = False
-) -> str:
-    """Build the Deposit Wallets section. Min $3 (Polygon, Solana); Min $10 (ETH, BNB, BTC). Full addresses shown."""
-    if load_error:
-        return "📥 *Deposit*\n\n⚠️ Could not load addresses. Try again later."
-    lines = [
-        "📥 *Deposit*",
-        f"🟢 Polygon (Min $3)\n`{evm}`",
-        f"🟣 Solana (Min $3)\n`{svm}`",
-        f"🔵 ETH/BNB (Min $10)\n`{evm}`",
-    ]
-    if btc:
-        lines.append(f"🟠 BTC (Min $10)\n`{btc}`")
-    return "\n".join(lines)
-
-
-async def wallet_screen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    logger.info("user_id=%s opened Wallet", user_id)
-    config_path = get_user_config_path(user_id)
-    pk, funder, eoa = await get_private_key_and_funder(user_id, config_path)
-    # Balance, display and bridge use proxy (funder) — matches Polymarket UI (Gnosis Safe proxy address)
-    config_path_str = str(config_path)
-    balance_usd = await asyncio.to_thread(
-        fetch_proxy_balance_sync, pk, funder, config_path_str, PROJECT_ROOT
-    )
-    balance = f"${balance_usd:.2f}"
-    addrs = await fetch_deposit_addresses(funder)
-    if addrs and (addrs.get("evm") or addrs.get("svm")):
-        evm = addrs.get("evm") or ""
-        svm = addrs.get("svm") or ""
-        btc = addrs.get("btc") or ""
-        deposit_text = _deposit_wallets_text(evm, svm, btc)
-    else:
-        deposit_text = _deposit_wallets_text("", "", "", load_error=True)
-    text = (
-        "👛 *WALLET*\n" + deposit_text + "\n\n"
-        "✅ *Polymarket:* (Don't deposit here)\n"
-        f"`{funder}`\n\n"
-        f"💰 Balance: {balance} · Min: $3 (Polygon/Solana) or $10 (ETH, BNB, BTC)"
-    )
-    text = _truncate_for_telegram(text, max_bytes=4096)
-    await update.effective_message.reply_text(
-        text,
-        reply_markup=wallet_inline(funder),
-        parse_mode="Markdown",
-    )
-
-
-async def withdraw_destination(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    await update.callback_query.answer()
-    await update.callback_query.edit_message_text(
-        "📤 *Select Withdrawal Destination*\nChoose where you want to receive your funds:",
-        reply_markup=withdraw_chain_inline(),
-        parse_mode="Markdown",
-    )
-
-
-async def withdraw_token_select(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    await update.callback_query.answer()
-    data = update.callback_query.data
-    if not data.startswith("withdraw:"):
-        return
-    chain = data.split(":", 1)[1]
-    chain_label = {
-        "polygon": "Polygon",
-        "solana": "Solana",
-        "ethereum": "Ethereum",
-        "bnb": "BNB",
-    }.get(chain, chain)
-    await update.callback_query.edit_message_text(
-        f"Withdraw from *{chain_label}*\nSelect token:",
-        reply_markup=withdraw_token_inline(chain),
-        parse_mode="Markdown",
-    )
-
-
-async def withdraw_enter_address(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    await update.callback_query.answer()
-    data = update.callback_query.data
-    if not data.startswith("withdraw_token:"):
-        return
-    parts = data.split(":")
-    chain, token = parts[1], parts[2]
-    context.user_data["withdraw_chain"] = chain
-    context.user_data["withdraw_token"] = token
-    context.user_data["pending_withdraw_address"] = True
-    chain_info = WITHDRAW_CHAINS.get(chain, {})
-    chain_label = chain_info.get("label", chain)
-    token_sym = chain_info.get("tokens", {}).get(token, {}).get("symbol", token.upper())
-    # Fetch current balance
-    user_id = update.effective_user.id
-    config_path = get_user_config_path(user_id)
-    pk, funder, _ = await get_private_key_and_funder(user_id, config_path)
-    balance_usd = await asyncio.to_thread(
-        fetch_proxy_balance_sync, pk, funder, str(config_path), PROJECT_ROOT
-    )
-    context.user_data["withdraw_balance"] = balance_usd
-    await update.callback_query.edit_message_text(
-        f"💸 *Withdraw {token_sym} to {chain_label}*\n\n"
-        f"Available Balance: `${balance_usd:.2f}` USDC\n\n"
-        "Enter your destination wallet address:",
-        reply_markup=InlineKeyboardMarkup(
-            [
-                [InlineKeyboardButton("❌ Cancel", callback_data="wallet")],
-            ]
-        ),
-        parse_mode="Markdown",
-    )
-
-
-async def referrals_screen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    logger.info("user_id=%s opened Referrals", user.id)
-    code = f"ref_{user.id}"  # TODO: from backend
-    link = f"https://t.me/YourBotName?start=ref_{code}"
-    text = _truncate_for_telegram(
-        "🤝 *Referrals*\n"
-        f"Code: `{code}`\n"
-        f"Link: {link}\n"
-        f"Min withdraw: ${MIN_WITHDRAWAL_USDC} USDC"
-    )
-    await update.effective_message.reply_text(
-        text,
-        reply_markup=referrals_inline(),
-        parse_mode="Markdown",
-    )
-
-
-_SETTINGS_TEXT = (
-    "⚙️ *Settings*\n"
-    "Order Price, Order Size (used by Arbitrage bot). Risk: Stop Time (seconds before close).\n\n"
-    "Select below:"
-)
-
-
-async def settings_screen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
-    logger.info("user_id=%s opened Settings", user_id)
-    ensure_user_config(user_id)
-    cfg = load_user_config(user_id)
-    await update.effective_message.reply_text(
-        _SETTINGS_TEXT,
-        reply_markup=settings_all_inline(cfg),
-        parse_mode="Markdown",
-    )
-
-
-async def help_screen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.info("user_id=%s opened Help", update.effective_user.id)
-    try:
-        from telegram_bot.constants import (
-            COMMUNITY_OWNER_URL,
-            DOCS_URL,
-            TUTORIAL_VIDEO_URL,
-        )
-    except ImportError:
-        TUTORIAL_VIDEO_URL = COMMUNITY_OWNER_URL = DOCS_URL = "https://t.me/sei_dev"
-    text = _truncate_for_telegram(
-        "📚 *Help*\n"
-        f"[Tutorial]({TUTORIAL_VIDEO_URL}) · [Developer]({COMMUNITY_OWNER_URL}) · [Docs]({DOCS_URL})\n"
-        "Deposit: send to your wallet address. Never share your private key."
-    )
-    await update.effective_message.reply_text(
-        text,
-        reply_markup=help_inline(),
-        parse_mode="Markdown",
-    )
+# ──────────────────────────────────────────────────────────────────────
+# Callback query handler
+# ──────────────────────────────────────────────────────────────────────
 
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -650,175 +746,645 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     data = (q.data or "").strip()
     user_id = update.effective_user.id
     logger.info("user_id=%s callback: %s", user_id, data)
-    if data == "trading:stop":
-        trading = context.application.bot_data.get("trading") or {}
-        entry = trading.pop(user_id, None)
-        if entry:
-            logger.info("user_id=%s stop requested, killing trading process", user_id)
-            stop_event = entry.get("stop_event")
-            if stop_event is not None:
-                stop_event.set()
-            proc = entry.get("proc")
-            msg = entry.get("msg")
-            if proc is not None and proc.returncode is None:
-                await _kill_trading_process(proc)
-            if msg is not None:
-                try:
-                    await msg.edit_text("🛑 Stopped by user.", reply_markup=None)
-                except Exception:
-                    pass
-        else:
-            logger.warning(
-                "user_id=%s stop clicked but no running session found", user_id
-            )
-        await q.answer("Stopped.")
-        return
-    if data == "main":
-        await q.answer()
-        await q.edit_message_text("Main menu:", reply_markup=MAIN_MENU)
-        return
-    if data == "wallet":
-        await q.answer()
-        user_id = update.effective_user.id
-        config_path = get_user_config_path(user_id)
-        pk, funder, eoa = await get_private_key_and_funder(user_id, config_path)
-        config_path_str = str(config_path)
-        balance_usd = await asyncio.to_thread(
-            fetch_proxy_balance_sync, pk, funder, config_path_str, PROJECT_ROOT
-        )
-        balance = f"${balance_usd:.2f}"
-        addrs = await fetch_deposit_addresses(funder)
-        if addrs and (addrs.get("evm") or addrs.get("svm")):
-            evm = addrs.get("evm") or ""
-            svm = addrs.get("svm") or ""
-            btc = addrs.get("btc") or ""
-            deposit_text = _deposit_wallets_text(evm, svm, btc)
-        else:
-            deposit_text = _deposit_wallets_text("", "", "", load_error=True)
-        text = (
-            "👛 *WALLET*\n" + deposit_text + "\n\n"
-            "✅ *Polymarket:* (Don't deposit here)\n"
-            f"`{funder}`\n\n"
-            f"💰 Balance: {balance} · Min: $3 (Polygon/Solana) or $10 (ETH, BNB, BTC)"
-        )
-        text = _truncate_for_telegram(text, max_bytes=4096)
-        await q.edit_message_text(
-            text, reply_markup=wallet_inline(funder), parse_mode="Markdown"
-        )
-        return
-        # Implementation cmd logic
 
+    try:
         await q.answer()
-        # Implementation removed for public sharing — never expose private keys
+    except Exception:
+        pass
+
+    # ── Main menu ──
+    if data == "main":
         await q.edit_message_text(
-            "⚠️ Private key export implementation removed for public sharing.",
+            "Choose an action from the menu below 👇",
             reply_markup=InlineKeyboardMarkup(
                 [
                     [
                         InlineKeyboardButton(
-                            "← Back to Settings", callback_data="settings"
-                        )
+                            "🤖 Engine", callback_data="engine:status"
+                        ),
+                        InlineKeyboardButton(
+                            "📊 Markets", callback_data="markets_menu"
+                        ),
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            "💼 Positions", callback_data="engine:positions"
+                        ),
+                        InlineKeyboardButton("⚙️ Settings", callback_data="settings"),
                     ],
                 ]
             ),
             parse_mode="Markdown",
         )
         return
-    await q.answer()
+
+    # ── Engine controls ──
+    if data == "engine:start_paper":
+        await _start_engine(q, paper=True)
+        return
+
+    if data == "engine:start_live":
+        private_key = os.getenv("PRIVATE_KEY", "")
+        if not private_key:
+            await q.edit_message_text(
+                "❌ Cannot start live trading: PRIVATE\\_KEY not set.",
+                reply_markup=engine_inline(False),
+                parse_mode="Markdown",
+            )
+            return
+        await _start_engine(q, paper=False)
+        return
+
+    if data == "engine:stop":
+        await _stop_engine(q)
+        return
+
+    if data == "engine:status":
+        if state.engine:
+            summary = state.engine.get_status_summary()
+            text = f"```\n{summary}\n```"
+        else:
+            text = "📊 No engine running."
+        text = _truncate(text)
+        is_running = state.engine is not None and state.engine.is_running
+        await q.edit_message_text(
+            text, reply_markup=engine_inline(is_running), parse_mode="Markdown"
+        )
+        return
+
+    if data == "engine:positions":
+        if state.engine:
+            summary = state.engine.get_positions_summary()
+            text = f"💼 *Open Positions*\n\n{summary}"
+        else:
+            text = "💼 No engine running."
+        text = _truncate(text)
+        is_running = state.engine is not None and state.engine.is_running
+        await q.edit_message_text(
+            text, reply_markup=engine_inline(is_running), parse_mode="Markdown"
+        )
+        return
+
+    if data == "engine:history":
+        if state.engine:
+            summary = state.engine.get_trade_history_summary(10)
+            text = f"📜 *Trade History*\n\n{summary}"
+        else:
+            text = "📜 No engine running."
+        text = _truncate(text)
+        is_running = state.engine is not None and state.engine.is_running
+        await q.edit_message_text(
+            text, reply_markup=engine_inline(is_running), parse_mode="Markdown"
+        )
+        return
+
+    # ── Markets ──
+    if data == "markets_menu":
+        await q.edit_message_text(
+            "📊 *Markets*\n\nChoose a category:",
+            reply_markup=markets_inline(),
+            parse_mode="Markdown",
+        )
+        return
+
+    if data == "markets:trending":
+        await _show_trending_callback(q)
+        return
+
+    if data == "markets:search":
+        context.user_data["pending_search"] = True
+        await q.edit_message_text(
+            "🔍 *Search Markets*\n\nType your search keyword:",
+            parse_mode="Markdown",
+        )
+        return
+
+    if data == "markets:value":
+        await _show_value_bets(q)
+        return
+
+    if data == "markets:expiring":
+        await _show_expiring(q)
+        return
+
+    if data == "markets:btc5m":
+        await _show_btc5m(q)
+        return
+
+    # ── Market detail ──
+    if data.startswith("mdetail:"):
+        market_id = data.split(":", 1)[1]
+        await _show_market_detail(q, market_id)
+        return
+
+    # ── Buy order ──
+    if data.startswith("buy:"):
+        parts = data.split(":")
+        if len(parts) >= 3:
+            market_id = parts[1]
+            outcome = parts[2]
+            await _place_order(q, context, market_id, outcome)
+        return
+
+    # ── Order book ──
+    if data.startswith("book:"):
+        market_id = data.split(":", 1)[1]
+        await _show_order_book(q, market_id)
+        return
+
+    # ── Close position ──
+    if data.startswith("close_pos:"):
+        pos_key = data.split(":", 1)[1]
+        await _close_position(q, pos_key)
+        return
+
+    # ── Settings ──
+    if data == "settings":
+        await q.edit_message_text(
+            "⚙️ *Settings*\n\nTap a setting to change it.",
+            reply_markup=settings_inline(state.config),
+            parse_mode="Markdown",
+        )
+        return
+
+    if data == "set:strategy":
+        await q.edit_message_text(
+            "⚙️ *Select Strategy:*",
+            reply_markup=strategy_inline(),
+            parse_mode="Markdown",
+        )
+        return
+
+    if data.startswith("setstrategy:"):
+        strategy_val = data.split(":", 1)[1]
+        try:
+            state.config.strategy = Strategy(strategy_val)
+            if state.engine:
+                state.engine.update_config(strategy=state.config.strategy)
+            await q.edit_message_text(
+                f"✅ Strategy set to *{strategy_val}*",
+                reply_markup=settings_inline(state.config),
+                parse_mode="Markdown",
+            )
+        except ValueError:
+            await q.edit_message_text(
+                f"⚠️ Unknown strategy: {strategy_val}",
+                reply_markup=settings_inline(state.config),
+                parse_mode="Markdown",
+            )
+        return
+
+    if data.startswith("set:"):
+        setting_name = data.split(":", 1)[1]
+        label = setting_name.replace("_", " ").title()
+        current = getattr(state.config, setting_name, "?")
+        context.user_data["pending_setting"] = setting_name
+        await q.edit_message_text(
+            f"⚙️ *{label}*\n\nCurrent value: `{current}`\n\nEnter new value:",
+            parse_mode="Markdown",
+        )
+        return
+
+    # Fallback
+    logger.warning("Unhandled callback: %s", data)
 
 
-async def cmd_arbitrage_bot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await position_manager_run(update, context)
+# ──────────────────────────────────────────────────────────────────────
+# Engine start/stop helpers
+# ──────────────────────────────────────────────────────────────────────
 
 
-async def cmd_upgrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show upgrade / premium contact when trial has ended."""
-    await update.effective_message.reply_text(
-        "⏱️ *Trial ended — upgrade to premium*\n\n"
-        "Real trading is limited to a 30-minute trial per user. "
-        "To continue with real orders, get the premium version.\n\n"
-        f"Contact: {UPGRADE_CONTACT}\n\n"
-        "Paper trading remains free and unlimited.",
+async def _start_engine(q, paper: bool) -> None:
+    # Stop existing engine if running
+    if state.engine and state.engine.is_running:
+        await state.engine.stop()
+
+    engine = state.init_engine(paper=paper)
+    mode = "📝 Paper" if paper else "🔴 LIVE"
+
+    await q.edit_message_text(
+        f"🚀 Starting {mode} trading engine…\n\n"
+        f"Strategy: {state.config.strategy.value}\n"
+        f"Order Size: ${state.config.order_size:.1f}\n"
+        f"Scan Interval: {state.config.scan_interval_seconds}s",
+        parse_mode="Markdown",
+    )
+
+    await engine.start()
+
+    await asyncio.sleep(1)
+
+    await q.edit_message_text(
+        f"🟢 {mode} trading engine is *running*!\n\n"
+        f"Strategy: {state.config.strategy.value}\n"
+        f"Order Size: ${state.config.order_size:.1f}\n"
+        f"Max Positions: {state.config.max_positions}\n"
+        f"Max Exposure: ${state.config.max_total_exposure:.0f}\n\n"
+        f"The engine will scan markets every {state.config.scan_interval_seconds}s "
+        f"and trade automatically.",
+        reply_markup=engine_inline(True),
         parse_mode="Markdown",
     )
 
 
-async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await wallet_screen(update, context)
+async def _stop_engine(q) -> None:
+    if not state.engine or not state.engine.is_running:
+        await q.edit_message_text(
+            "⚪ Engine is not running.",
+            reply_markup=engine_inline(False),
+            parse_mode="Markdown",
+        )
+        return
+
+    await q.edit_message_text("🛑 Stopping engine…", parse_mode="Markdown")
+
+    summary_before = state.engine.get_status_summary()
+    await state.engine.stop()
+
+    await q.edit_message_text(
+        f"🛑 Engine stopped.\n\n```\n{_truncate(summary_before, 3500)}\n```",
+        reply_markup=engine_inline(False),
+        parse_mode="Markdown",
+    )
 
 
-async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await settings_screen(update, context)
+# ──────────────────────────────────────────────────────────────────────
+# Market display helpers
+# ──────────────────────────────────────────────────────────────────────
 
 
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await help_screen(update, context)
+async def _show_trending_callback(q) -> None:
+    await q.edit_message_text("🔥 Loading trending markets…")
+
+    markets = await asyncio.to_thread(state.finder.get_trending_markets, 8, 500, 200)
+
+    if not markets:
+        await q.edit_message_text(
+            "🔥 No trending markets found.",
+            reply_markup=markets_inline(),
+            parse_mode="Markdown",
+        )
+        return
+
+    lines = ["🔥 *Trending Markets*\n"]
+    for i, m in enumerate(markets[:8], 1):
+        lines.append(_format_market(m, i))
+        lines.append("")
+
+    text = _truncate("\n".join(lines))
+
+    buttons = []
+    for m in markets[:8]:
+        mid = m.get("id", "")
+        qtext = (m.get("question") or "")[:25]
+        buttons.append(
+            InlineKeyboardButton(f"📊 {qtext}", callback_data=f"mdetail:{mid}")
+        )
+    rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton("← Markets", callback_data="markets_menu")])
+
+    await q.edit_message_text(
+        text, reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown"
+    )
 
 
-BOT_COMMANDS = [
-    BotCommand("start", "Start bot"),
-    BotCommand("arbitrage_bot", "Arbitrage bot (merge/force-sell)"),
-    BotCommand("wallet", "Show your wallet balance"),
-    BotCommand("settings", "Bot settings"),
-    BotCommand("help", "View help and FAQs"),
-    BotCommand("upgrade", "Premium / trial ended"),
-]
+async def _show_value_bets(q) -> None:
+    await q.edit_message_text("💰 Finding value bets…")
+
+    markets = await asyncio.to_thread(
+        state.finder.find_undervalued_markets, 0.20, 500, 8
+    )
+
+    if not markets:
+        await q.edit_message_text(
+            "💰 No undervalued markets found right now.",
+            reply_markup=markets_inline(),
+            parse_mode="Markdown",
+        )
+        return
+
+    lines = ["💰 *Undervalued Markets* (outcome < $0.20)\n"]
+    for i, m in enumerate(markets[:8], 1):
+        lines.append(_format_market(m, i))
+        lines.append("")
+
+    text = _truncate("\n".join(lines))
+
+    buttons = []
+    for m in markets[:6]:
+        mid = m.get("id", "")
+        qtext = (m.get("question") or "")[:25]
+        buttons.append(
+            InlineKeyboardButton(f"📊 {qtext}", callback_data=f"mdetail:{mid}")
+        )
+    rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton("← Markets", callback_data="markets_menu")])
+
+    await q.edit_message_text(
+        text, reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown"
+    )
+
+
+async def _show_expiring(q) -> None:
+    await q.edit_message_text("⏰ Finding markets expiring soon…")
+
+    markets = await asyncio.to_thread(state.finder.find_close_to_expiry, 48, 500, 8)
+
+    if not markets:
+        await q.edit_message_text(
+            "⏰ No markets expiring within 48 hours.",
+            reply_markup=markets_inline(),
+            parse_mode="Markdown",
+        )
+        return
+
+    lines = ["⏰ *Markets Expiring Soon*\n"]
+    for i, m in enumerate(markets[:8], 1):
+        hours = m.get("_hours_until_expiry", "?")
+        lines.append(_format_market(m, i))
+        lines.append(f"   ⏰ Expires in {hours}h")
+        lines.append("")
+
+    text = _truncate("\n".join(lines))
+
+    buttons = []
+    for m in markets[:6]:
+        mid = m.get("id", "")
+        qtext = (m.get("question") or "")[:25]
+        buttons.append(
+            InlineKeyboardButton(f"📊 {qtext}", callback_data=f"mdetail:{mid}")
+        )
+    rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+    rows.append([InlineKeyboardButton("← Markets", callback_data="markets_menu")])
+
+    await q.edit_message_text(
+        text, reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown"
+    )
+
+
+async def _show_btc5m(q) -> None:
+    await q.edit_message_text("₿ Looking for BTC 5-minute market…")
+
+    market = await asyncio.to_thread(state.finder.find_next_btc_5m_market)
+
+    if not market:
+        await q.edit_message_text(
+            "₿ No active BTC 5-minute market found right now.\n\n"
+            "These markets may only be available during certain hours.",
+            reply_markup=markets_inline(),
+            parse_mode="Markdown",
+        )
+        return
+
+    text = _format_market_detail(market)
+    mid = market.get("id", "")
+
+    await q.edit_message_text(
+        text,
+        reply_markup=market_action_inline(mid),
+        parse_mode="Markdown",
+    )
+
+
+async def _show_market_detail(q, market_id: str) -> None:
+    await q.edit_message_text("📊 Loading market details…")
+
+    market = await asyncio.to_thread(state.finder.fetch_market_by_id, market_id)
+
+    if not market:
+        await q.edit_message_text(
+            f"❌ Market {market_id} not found.",
+            reply_markup=markets_inline(),
+            parse_mode="Markdown",
+        )
+        return
+
+    text = _format_market_detail(market)
+    text = _truncate(text)
+
+    await q.edit_message_text(
+        text,
+        reply_markup=market_action_inline(market_id),
+        parse_mode="Markdown",
+    )
+
+
+async def _show_order_book(q, market_id: str) -> None:
+    bot = state.init_bot()
+
+    market = await asyncio.to_thread(state.finder.fetch_market_by_id, market_id)
+    if not market:
+        await q.edit_message_text(f"❌ Market {market_id} not found.")
+        return
+
+    token_ids = MarketFinder.extract_token_ids(market)
+    if not token_ids:
+        await q.edit_message_text(f"❌ Could not extract token IDs.")
+        return
+
+    yes_tid = token_ids.get("yes_token_id", "")
+
+    if bot.poly_client and bot.poly_client.is_available() and yes_tid:
+        try:
+            book = await asyncio.to_thread(bot.poly_client.get_order_book, yes_tid)
+            if book:
+                question = (market.get("question") or "?")[:40]
+                lines = [f"📊 *Order Book: {question}*\n"]
+
+                if hasattr(book, "asks") and book.asks:
+                    lines.append("*Asks (Sell):*")
+                    for ask in list(book.asks)[:5]:
+                        price = getattr(ask, "price", "?")
+                        size = getattr(ask, "size", "?")
+                        lines.append(f"  ${price} × {size}")
+
+                if hasattr(book, "bids") and book.bids:
+                    lines.append("\n*Bids (Buy):*")
+                    for bid in list(book.bids)[:5]:
+                        price = getattr(bid, "price", "?")
+                        size = getattr(bid, "size", "?")
+                        lines.append(f"  ${price} × {size}")
+
+                text = "\n".join(lines)
+                await q.edit_message_text(
+                    text,
+                    reply_markup=market_action_inline(market_id),
+                    parse_mode="Markdown",
+                )
+                return
+        except Exception as exc:
+            logger.warning("Order book fetch failed: %s", exc)
+
+    # Fallback: show prices from Gamma API
+    info = MarketFinder.extract_market_info(market)
+    text = (
+        f"📊 *Order Book (summary)*\n\n"
+        f"Best Bid: ${info['best_bid']:.3f}\n"
+        f"Best Ask: ${info['best_ask']:.3f}\n"
+        f"Spread: ${info['spread']:.3f}\n"
+        f"Last Trade: ${info['last_trade_price']:.3f}\n\n"
+        f"_(Full order book requires CLOB client connection)_"
+    )
+    await q.edit_message_text(
+        text,
+        reply_markup=market_action_inline(market_id),
+        parse_mode="Markdown",
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Order placement via engine
+# ──────────────────────────────────────────────────────────────────────
+
+
+async def _place_order(q, context, market_id: str, outcome: str) -> None:
+    if not state.engine:
+        # Create engine in paper mode if none exists
+        state.init_engine(paper=True)
+
+    if not state.engine:
+        await q.edit_message_text(
+            "❌ Could not initialise trading engine.",
+            parse_mode="Markdown",
+        )
+        return
+
+    await q.edit_message_text(
+        f"🔄 Placing {'📝 paper' if state.config.paper_trading else '🔴 LIVE'} "
+        f"order: BUY {outcome.upper()} in market {market_id}…",
+        parse_mode="Markdown",
+    )
+
+    try:
+        result = await state.engine.manual_buy(
+            market_id=market_id,
+            outcome=outcome,
+            price=state.config.order_price,
+            size=state.config.order_size,
+        )
+    except Exception as exc:
+        result = f"❌ Error: {exc}"
+
+    is_running = state.engine.is_running
+    await q.edit_message_text(
+        result,
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "💼 Positions", callback_data="engine:positions"
+                    ),
+                    InlineKeyboardButton("📊 Markets", callback_data="markets_menu"),
+                ],
+                [InlineKeyboardButton("← Main Menu", callback_data="main")],
+            ]
+        ),
+        parse_mode="Markdown",
+    )
+
+
+async def _close_position(q, pos_key: str) -> None:
+    if not state.engine:
+        await q.edit_message_text("❌ No engine running.")
+        return
+
+    try:
+        result = await state.engine.manual_sell_position(pos_key)
+    except Exception as exc:
+        result = f"❌ Error: {exc}"
+
+    await q.edit_message_text(
+        result,
+        reply_markup=engine_inline(state.engine.is_running),
+        parse_mode="Markdown",
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Error handler
+# ──────────────────────────────────────────────────────────────────────
 
 
 async def post_init(application) -> None:
-    await application.bot.set_my_commands(BOT_COMMANDS)
+    commands = [
+        BotCommand("start", "Start the bot"),
+        BotCommand("engine", "Trading engine controls"),
+        BotCommand("markets", "Browse markets"),
+        BotCommand("search", "Search markets by keyword"),
+        BotCommand("trending", "Trending markets"),
+        BotCommand("positions", "View open positions"),
+        BotCommand("wallet", "Wallet balance"),
+        BotCommand("settings", "Bot settings"),
+        BotCommand("status", "Engine status"),
+        BotCommand("help", "Help & FAQ"),
+    ]
+    await application.bot.set_my_commands(commands)
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle errors so they don't crash the bot; log RetryAfter and expired callback queries."""
     exc = context.error
     if isinstance(exc, RetryAfter):
-        logger.warning(
-            "Telegram rate limit (RetryAfter): wait %s seconds. Update: %s",
-            exc.retry_after,
-            update,
-        )
+        logger.warning("Rate limit (RetryAfter %ss)", exc.retry_after)
         return
     if isinstance(exc, Conflict):
         logger.error(
-            "Telegram Conflict (409): Another bot instance is using this token. "
-            "Stop all other instances (other terminals, servers, or BotFather webhook), then restart."
+            "Conflict (409): Another bot instance using this token. "
+            "Stop other instances and restart."
         )
         sys.exit(1)
     msg = getattr(exc, "message", None) or str(exc) or ""
     if isinstance(exc, BadRequest) and "query" in msg.lower():
-        # Callback query expired (e.g. "Query is too old and response timeout expired")
-        logger.warning("Telegram callback query expired or invalid: %s", exc.message)
+        logger.warning("Callback query expired: %s", msg)
         return
-    logger.exception("Unhandled error in Telegram bot: %s", exc, exc_info=exc)
+    logger.exception("Unhandled error: %s", exc, exc_info=exc)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Build & run
+# ──────────────────────────────────────────────────────────────────────
 
 
 def build_application() -> Application:
+    if not BOT_TOKEN:
+        logger.error("TELEGRAM_BOT_TOKEN not set!")
+        sys.exit(1)
+
     builder = Application.builder().token(BOT_TOKEN)
-    try:
-        builder = builder.rate_limiter(
-            AIORateLimiter(overall_max_rate=10, overall_time_period=1, max_retries=3)
-        )
-    except RuntimeError as e:
-        if "rate-limiter" in str(e).lower() or "aiolimiter" in str(e).lower():
-            logger.warning(
-                "Rate limiter not available (install python-telegram-bot[rate-limiter]). Running without throttling."
+
+    if RATE_LIMITER_AVAILABLE and AIORateLimiter is not None:
+        try:
+            builder = builder.rate_limiter(
+                AIORateLimiter(
+                    overall_max_rate=10, overall_time_period=1, max_retries=3
+                )
             )
-        else:
-            raise
+        except RuntimeError as e:
+            if "rate-limiter" in str(e).lower() or "aiolimiter" in str(e).lower():
+                logger.warning(
+                    "Rate limiter not available. Running without throttling."
+                )
+            else:
+                raise
 
     app = builder.post_init(post_init).build()
 
     # Command handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("arbitrage_bot", cmd_arbitrage_bot))
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("engine", cmd_engine))
+    app.add_handler(CommandHandler("markets", cmd_markets))
+    app.add_handler(CommandHandler("search", cmd_search))
+    app.add_handler(CommandHandler("trending", cmd_trending))
+    app.add_handler(CommandHandler("positions", cmd_positions))
     app.add_handler(CommandHandler("wallet", cmd_wallet))
     app.add_handler(CommandHandler("settings", cmd_settings))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("upgrade", cmd_upgrade))
+    app.add_handler(CommandHandler("status", cmd_status))
 
     # Callback query handler
     app.add_handler(CallbackQueryHandler(callback_handler))
+
+    # Text message handler (menu buttons & setting inputs)
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, main_menu_text))
 
     # Error handler
     app.add_error_handler(error_handler)
@@ -830,15 +1396,16 @@ def main() -> None:
     if not BOT_TOKEN:
         print("Set TELEGRAM_BOT_TOKEN to run the bot.")
         sys.exit(1)
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     logger.setLevel(logging.INFO)
-    sys.path.insert(0, str(PROJECT_ROOT))
+
     app = build_application()
-    logger.info("Poly5M bot starting (polling)")
+    logger.info("Polymarket Trading Bot starting (polling)…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
