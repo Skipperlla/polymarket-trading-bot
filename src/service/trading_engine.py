@@ -865,6 +865,9 @@ class TradingEngine:
     # Position management
     # ------------------------------------------------------------------
 
+    # Grace period: don't trigger stop-loss within this many seconds of opening
+    STOP_LOSS_GRACE_SECONDS = 60
+
     async def _manage_positions(self) -> None:
         """Update positions and check for stop-loss / take-profit."""
         positions_to_close: List[str] = []
@@ -877,8 +880,23 @@ class TradingEngine:
                 else:
                     current_price = await self._get_live_price(pos)
 
-                if current_price is not None:
+                if current_price is not None and current_price > 0:
                     pos.update_pnl(current_price)
+                else:
+                    # Could not fetch a valid price — skip stop-loss evaluation
+                    logger.debug("No valid price for %s, keeping entry price", pos_key)
+                    continue
+
+                # Grace period: skip stop-loss check for newly opened positions
+                age = time.time() - pos.timestamp
+                if age < self.STOP_LOSS_GRACE_SECONDS:
+                    logger.debug(
+                        "Position %s in grace period (%.0fs < %ds), skipping stop-loss",
+                        pos_key,
+                        age,
+                        self.STOP_LOSS_GRACE_SECONDS,
+                    )
+                    continue
 
                 # Stop-loss check
                 if pos.pnl_pct <= -self.config.stop_loss_pct:
@@ -907,23 +925,63 @@ class TradingEngine:
             await self._close_position(pos_key)
 
     async def _get_paper_price(self, pos: Position) -> Optional[float]:
-        """Get simulated current price for a paper position."""
+        """Get simulated current price for a paper position.
+
+        Tries multiple lookup strategies:
+          1. Fetch market by its numeric ID (fastest, most reliable)
+          2. Fetch market by condition ID
+          3. Fetch market by slug search (fallback)
+          4. Return entry_price as last resort (position stays flat)
+        """
         try:
-            market = await asyncio.to_thread(
-                self.finder.fetch_market_by_condition_id, pos.condition_id
-            )
+            market = None
+
+            # Strategy 1: fetch by market ID (most reliable)
+            if pos.market_id:
+                market = await asyncio.to_thread(
+                    self.finder.fetch_market_by_id, pos.market_id
+                )
+
+            # Strategy 2: fetch by condition ID
+            if not market and pos.condition_id:
+                market = await asyncio.to_thread(
+                    self.finder.fetch_market_by_condition_id, pos.condition_id
+                )
+
+            # Strategy 3: slug-based search for BTC 5m markets
+            if not market and "btc" in pos.question.lower() and "5" in pos.question:
+                market_data = await asyncio.to_thread(
+                    self.finder.find_next_btc_5m_market
+                )
+                if market_data and market_data.get("id") == pos.market_id:
+                    market = market_data
+
             if market:
                 info = MarketFinder.extract_market_info(market)
                 prices = info.get("outcome_prices", [])
-                # Try to match outcome
                 outcomes = info.get("outcomes", [])
+
+                # Try to match outcome label to get the right price
                 for i, out in enumerate(outcomes):
                     if out.lower() == pos.outcome_label.lower() and i < len(prices):
-                        return prices[i]
-                # Fallback to last trade price
-                return info.get("last_trade_price") or pos.entry_price
-        except Exception:
-            pass
+                        price = prices[i]
+                        if price > 0:
+                            return price
+
+                # Fallback: use last trade price if it's valid
+                ltp = info.get("last_trade_price")
+                if ltp and ltp > 0:
+                    return ltp
+
+                # Fallback: use bestBid as a conservative estimate
+                best_bid = info.get("best_bid")
+                if best_bid and best_bid > 0:
+                    return best_bid
+
+        except Exception as exc:
+            logger.debug("_get_paper_price error for %s: %s", pos.market_id, exc)
+
+        # Last resort: return entry price (position stays flat, no false stop-loss)
         return pos.entry_price
 
     async def _get_live_price(self, pos: Position) -> Optional[float]:
