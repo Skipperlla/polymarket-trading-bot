@@ -12,9 +12,24 @@ Handles:
 """
 
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("PolyClient")
+
+
+def _validate_funder(funder: Optional[str]) -> Optional[str]:
+    """Return funder only if it is a valid 0x-prefixed Ethereum address."""
+    if not funder:
+        return None
+    if not re.fullmatch(r"0x[0-9a-fA-F]{40}", funder):
+        logger.warning(
+            "Ignoring invalid FUNDER value (not a 42-char hex address). "
+            "Falling back to signer address."
+        )
+        return None
+    return funder
+
 
 try:
     from py_clob_client.client import ClobClient
@@ -64,7 +79,7 @@ class PolyClient:
         self.private_key = private_key
         self.chain_id = chain_id
         self.signature_type = signature_type
-        self.funder = funder
+        self.funder = _validate_funder(funder)
         self.client: Optional[Any] = None
 
         if not CLOB_AVAILABLE or ClobClient is None:
