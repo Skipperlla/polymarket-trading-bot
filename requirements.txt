@@ -25,3 +25,12 @@ responses==0.25.8
 poly_eip712_structs==0.0.1
 py-builder-signing-sdk==0.0.2
 py-builder-relayer-client
+
+# Telegram bot
+python-telegram-bot[rate-limiter]>=20.7
+
+# MongoDB
+pymongo[srv]>=4.6.0
+
+# YAML config
+pyyaml>=6.0
