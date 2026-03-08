@@ -54,12 +54,14 @@ class TradingConfig:
     """Configuration for the trading engine."""
 
     # Strategy
-    strategy: Strategy = Strategy.VALUE_BET
+    strategy: Strategy = Strategy.BTC_5M
 
     # Order sizing
     order_size: float = 5.0  # USDC per order
     max_order_size: float = 50.0  # Max single order size
-    order_price: float = 0.50  # Default limit price
+    order_price: float = (
+        0.50  # Default limit price (0.50 = fair value for BTC 5m up/down)
+    )
 
     # Risk controls
     max_total_exposure: float = 100.0  # Max total USDC in open positions
@@ -76,9 +78,13 @@ class TradingConfig:
     max_price: float = 0.95  # Don't buy above this price
 
     # Timing
-    scan_interval_seconds: int = 60  # How often to scan for markets
-    order_ttl_seconds: int = 300  # Cancel unfilled orders after this
-    cooldown_after_trade_seconds: int = 10  # Wait between trades
+    scan_interval_seconds: int = (
+        30  # How often to scan for markets (30s for 5m markets)
+    )
+    order_ttl_seconds: int = (
+        240  # Cancel unfilled orders after 4 min (before 5m market closes)
+    )
+    cooldown_after_trade_seconds: int = 5  # Wait between trades (fast for 5m cycles)
 
     # Paper trading
     paper_trading: bool = True  # If True, don't place real orders
@@ -91,7 +97,7 @@ class TradingConfig:
     def from_env(cls) -> "TradingConfig":
         """Build config from environment variables."""
         return cls(
-            strategy=Strategy(os.getenv("STRATEGY", "value_bet")),
+            strategy=Strategy(os.getenv("STRATEGY", "btc_5m")),
             order_size=float(os.getenv("ORDER_SIZE", "5.0")),
             max_order_size=float(os.getenv("MAX_ORDER_SIZE", "50.0")),
             order_price=float(os.getenv("ORDER_PRICE", "0.50")),
@@ -105,9 +111,9 @@ class TradingConfig:
             max_spread=float(os.getenv("MAX_SPREAD", "0.10")),
             min_price=float(os.getenv("MIN_PRICE", "0.05")),
             max_price=float(os.getenv("MAX_PRICE", "0.95")),
-            scan_interval_seconds=int(os.getenv("SCAN_INTERVAL", "60")),
-            order_ttl_seconds=int(os.getenv("ORDER_TTL", "300")),
-            cooldown_after_trade_seconds=int(os.getenv("COOLDOWN_SECONDS", "10")),
+            scan_interval_seconds=int(os.getenv("SCAN_INTERVAL", "30")),
+            order_ttl_seconds=int(os.getenv("ORDER_TTL", "240")),
+            cooldown_after_trade_seconds=int(os.getenv("COOLDOWN_SECONDS", "5")),
             paper_trading=os.getenv("PAPER_TRADING", "true").lower()
             in (
                 "true",

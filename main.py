@@ -19,7 +19,7 @@ Environment variables:
   BUILDER_API_KEY      – Optional Builder API key.
   BUILDER_SECRET       – Optional Builder API secret.
   BUILDER_PASS_PHRASE  – Optional Builder API passphrase.
-  STRATEGY             – Trading strategy: value_bet, spread_capture, momentum, btc_5m (default: value_bet)
+  STRATEGY             – Trading strategy: btc_5m, value_bet, spread_capture, momentum (default: btc_5m)
   PAPER_TRADING        – true/false (default: true)
   TELEGRAM_BOT_TOKEN   – If set along with --telegram, starts Telegram bot.
   MONGO_URI            – MongoDB URI for Telegram bot persistence.
