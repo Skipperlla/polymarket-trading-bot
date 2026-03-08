@@ -326,12 +326,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("User started bot: user_id=%s @%s", user_id, username)
     ensure_user_config(user_id, username=username, name=name)
     # Ensure user has a private key (core implementation removed for public sharing)
-    try:
-        await ensure_private_key(user_id)
-        await update_user_meta(user_id, username=username, name=name)
-    except ImportError:
-        await _stub_ensure_private_key(user_id)
-        await _stub_update_user_meta(user_id, username=username, name=name)
+    await _stub_ensure_private_key(user_id)
+    await _stub_update_user_meta(user_id, username=username, name=name)
     await update.effective_message.reply_text(
         "Welcome to **Poly5M**. Choose an action:",
         reply_markup=MAIN_MENU,
