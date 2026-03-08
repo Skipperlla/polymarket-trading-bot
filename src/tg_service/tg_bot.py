@@ -62,11 +62,11 @@ def _stub_fetch_balance(*a, **kw):
     return 0.0
 
 
-def _stub_fetch_deposit_addresses(*a, **kw):
+async def _stub_fetch_deposit_addresses(*a, **kw):
     return {}
 
 
-def _stub_create_withdrawal_addresses(*a, **kw):
+async def _stub_create_withdrawal_addresses(*a, **kw):
     return {"error": "Withdrawal/bridge implementation removed for public sharing."}
 
 
