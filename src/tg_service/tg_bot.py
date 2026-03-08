@@ -28,11 +28,19 @@ if str(PROJECT_ROOT / "src") not in sys.path:
 
 # Load .env so TELEGRAM_BOT_TOKEN, MONGO_URI, etc. are set (repo root first, then src)
 from dotenv import load_dotenv
+
 load_dotenv(PROJECT_ROOT.parent / ".env")
 load_dotenv(PROJECT_ROOT / ".env")
 
 import yaml
-from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Update
+from telegram import (
+    BotCommand,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    Update,
+)
 from telegram.error import BadRequest, Conflict, RetryAfter
 from telegram.ext import (
     AIORateLimiter,
@@ -44,42 +52,60 @@ from telegram.ext import (
     filters,
 )
 
+
 # Core skilled code removed for public sharing — use stubs
 def _stub_check_allowance(*a, **kw):
     return False, "⚠️ Balance/allowance check implementation removed for public sharing."
+
+
 def _stub_fetch_balance(*a, **kw):
     return 0.0
+
+
 def _stub_fetch_deposit_addresses(*a, **kw):
     return {}
+
+
 def _stub_create_withdrawal_addresses(*a, **kw):
     return {"error": "Withdrawal/bridge implementation removed for public sharing."}
 
+
 try:
-    from telegram_bot.balance import check_and_update_allowance_sync, fetch_proxy_balance_sync
+    from telegram_bot.balance import (
+        check_and_update_allowance_sync,
+        fetch_proxy_balance_sync,
+    )
 except ImportError:
     check_and_update_allowance_sync = _stub_check_allowance
     fetch_proxy_balance_sync = _stub_fetch_balance
 
 try:
-    from telegram_bot.bridge import fetch_deposit_addresses, create_withdrawal_addresses, WITHDRAW_CHAINS
+    from telegram_bot.bridge import (
+        WITHDRAW_CHAINS,
+        create_withdrawal_addresses,
+        fetch_deposit_addresses,
+    )
 except ImportError:
     fetch_deposit_addresses = _stub_fetch_deposit_addresses
     create_withdrawal_addresses = _stub_create_withdrawal_addresses
-    WITHDRAW_CHAINS = {"polygon": {"label": "Polygon", "tokens": {}}, "solana": {"label": "Solana", "tokens": {}}}
+    WITHDRAW_CHAINS = {
+        "polygon": {"label": "Polygon", "tokens": {}},
+        "solana": {"label": "Solana", "tokens": {}},
+    }
 
 try:
     from telegram_bot.constants import (
         BOT_TOKEN,
-        PROJECT_ROOT,
-        REPO_ROOT,
+        MAX_CONCURRENT_TRADING_SESSIONS,
         MIN_DEPOSIT_USD,
         MIN_WITHDRAWAL_USDC,
-        TRADING_BINARY_RAW,
-        TRADING_BINARY_DEFAULT,
-        TRADING_SCRIPT,
         POSITION_MANAGER_SCRIPT,
+        PROJECT_ROOT,
+        REPO_ROOT,
+        TRADING_BINARY_DEFAULT,
+        TRADING_BINARY_RAW,
+        TRADING_SCRIPT,
         UPGRADE_CONTACT,
-        MAX_CONCURRENT_TRADING_SESSIONS,
     )
 except ImportError:
     BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -96,51 +122,80 @@ except ImportError:
 try:
     from telegram_bot.trial import can_use_real_trading, start_trial_if_needed
 except ImportError:
+
     async def can_use_real_trading(uid):
         return False, "Trial implementation removed for public sharing."
+
     async def start_trial_if_needed(uid):
         return None
+
 
 try:
     from telegram_bot.keyboards import (
         MAIN_MENU,
         TRADING_STOP_KEYBOARD,
+        help_inline,
+        referrals_inline,
+        settings_all_inline,
         wallet_inline,
         withdraw_chain_inline,
-        withdraw_token_inline,
         withdraw_confirm_inline,
-        referrals_inline,
-        help_inline,
-        settings_all_inline,
+        withdraw_token_inline,
     )
 except ImportError:
     MAIN_MENU = ReplyKeyboardMarkup(
         [["🔄 Arbitrage Bot"], ["👛 Wallet", "⚙️ Settings", "📖 Help"]],
         resize_keyboard=True,
     )
-    TRADING_STOP_KEYBOARD = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Stop", callback_data="trading:stop")]])
-    def wallet_inline(*a): return InlineKeyboardMarkup([])
-    def withdraw_chain_inline(): return InlineKeyboardMarkup([])
-    def withdraw_token_inline(*a): return InlineKeyboardMarkup([])
-    def withdraw_confirm_inline(): return InlineKeyboardMarkup([])
-    def referrals_inline(): return InlineKeyboardMarkup([])
-    def help_inline(): return InlineKeyboardMarkup([])
-    def settings_all_inline(*a): return InlineKeyboardMarkup([])
+    TRADING_STOP_KEYBOARD = InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🛑 Stop", callback_data="trading:stop")]]
+    )
+
+    def wallet_inline(*a):
+        return InlineKeyboardMarkup([])
+
+    def withdraw_chain_inline():
+        return InlineKeyboardMarkup([])
+
+    def withdraw_token_inline(*a):
+        return InlineKeyboardMarkup([])
+
+    def withdraw_confirm_inline():
+        return InlineKeyboardMarkup([])
+
+    def referrals_inline():
+        return InlineKeyboardMarkup([])
+
+    def help_inline():
+        return InlineKeyboardMarkup([])
+
+    def settings_all_inline(*a):
+        return InlineKeyboardMarkup([])
+
 
 async def _stub_get_private_key_and_funder(uid, path):
     return ("", "", "")
+
+
 async def _stub_ensure_private_key(uid):
     pass
+
+
 async def _stub_update_user_meta(uid, **kw):
     pass
+
+
 try:
     from telegram_bot.user_keys import get_private_key_and_funder
 except ImportError:
     get_private_key_and_funder = _stub_get_private_key_and_funder
 
+
 # Token check / approval — core implementation removed
 def _stub_check_token_status(*a, **kw):
     return False, "⚠️ Token status check implementation removed for public sharing."
+
+
 def _stub_ensure_approvals(*a, **kw):
     return False, "⚠️ Token approval implementation removed for public sharing."
 
@@ -207,23 +262,28 @@ def _truncate_log_message(prefix: str, tail: str) -> str:
 
 # _stream_subprocess_to_message and _kill_trading_process removed for public sharing
 
+
 async def _kill_trading_process(proc: asyncio.subprocess.Process) -> None:
     """Stub — implementation removed for public sharing."""
     pass
+
 
 # ---------- Per-user config (core implementation can be replaced) ----------
 def get_user_config_path(user_id: int) -> Path:
     try:
         from config.config import get_user_config_path as _get
+
         return _get(user_id, PROJECT_ROOT)
     except ImportError:
         path = PROJECT_ROOT / "config" / "users" / f"{user_id}.yaml"
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
+
 def ensure_user_config(user_id: int, username: str = "", name: str = "") -> Path:
     try:
         from config.config import ensure_user_config as _ensure
+
         path = _ensure(user_id, PROJECT_ROOT)
     except ImportError:
         path = get_user_config_path(user_id)
@@ -234,9 +294,11 @@ def ensure_user_config(user_id: int, username: str = "", name: str = "") -> Path
         meta.write_text("USERNAME=\nNAME=\n")
     return path
 
+
 def load_user_config(user_id: int) -> dict:
     try:
         from config.config import load_config
+
         path = ensure_user_config(user_id)
         settings = load_config(str(path))
         return settings.model_dump()
@@ -246,6 +308,7 @@ def load_user_config(user_id: int) -> dict:
             with open(path) as f:
                 return yaml.safe_load(f) or {}
         return {"order": {}, "risk": {}, "execution": {}}
+
 
 def save_user_config(user_id: int, data: dict) -> None:
     path = get_user_config_path(user_id)
@@ -259,7 +322,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     user_id = user.id
     username = user.username or ""
-    name = (user.full_name or user.first_name or "")
+    name = user.full_name or user.first_name or ""
     logger.info("User started bot: user_id=%s @%s", user_id, username)
     ensure_user_config(user_id, username=username, name=name)
     # Ensure user has a private key (core implementation removed for public sharing)
@@ -274,8 +337,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         reply_markup=MAIN_MENU,
         parse_mode="Markdown",
     )
-
-    
 
 
 async def main_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -322,7 +383,9 @@ async def main_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         token = context.user_data.get("withdraw_token", "")
         chain_info = WITHDRAW_CHAINS.get(chain, {})
         chain_label = chain_info.get("label", chain)
-        token_sym = chain_info.get("tokens", {}).get(token, {}).get("symbol", token.upper())
+        token_sym = (
+            chain_info.get("tokens", {}).get(token, {}).get("symbol", token.upper())
+        )
         recipient = text.strip()
         # Basic validation
         is_solana = chain == "solana"
@@ -368,7 +431,9 @@ async def main_menu_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         logger.info("user_id=%s → Help", user_id)
         await help_screen(update, context)
     else:
-        await update.effective_message.reply_text("Use the menu buttons below.", reply_markup=MAIN_MENU)
+        await update.effective_message.reply_text(
+            "Use the menu buttons below.", reply_markup=MAIN_MENU
+        )
 
 
 async def paper_trading(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -389,7 +454,9 @@ async def real_trading(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
-async def position_manager_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def position_manager_run(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
     """Arbitrage bot — implementation removed for public sharing."""
     await update.effective_message.reply_text(
         "⚠️ Arbitrage bot (merge/force-sell loop) implementation removed for public sharing.\n"
@@ -405,7 +472,9 @@ def _shorten_address(addr: str, head: int = 8, tail: int = 6) -> str:
     return f"{addr[:head]}...{addr[-tail:]}"
 
 
-def _deposit_wallets_text(evm: str, svm: str, btc: str = "", load_error: bool = False) -> str:
+def _deposit_wallets_text(
+    evm: str, svm: str, btc: str = "", load_error: bool = False
+) -> str:
     """Build the Deposit Wallets section. Min $3 (Polygon, Solana); Min $10 (ETH, BNB, BTC). Full addresses shown."""
     if load_error:
         return "📥 *Deposit*\n\n⚠️ Could not load addresses. Try again later."
@@ -440,8 +509,7 @@ async def wallet_screen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     else:
         deposit_text = _deposit_wallets_text("", "", "", load_error=True)
     text = (
-        "👛 *WALLET*\n"
-        + deposit_text + "\n\n"
+        "👛 *WALLET*\n" + deposit_text + "\n\n"
         "✅ *Polymarket:* (Don't deposit here)\n"
         f"`{funder}`\n\n"
         f"💰 Balance: {balance} · Min: $3 (Polygon/Solana) or $10 (ETH, BNB, BTC)"
@@ -454,7 +522,9 @@ async def wallet_screen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 
-async def withdraw_destination(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def withdraw_destination(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
     await update.callback_query.answer()
     await update.callback_query.edit_message_text(
         "📤 *Select Withdrawal Destination*\nChoose where you want to receive your funds:",
@@ -463,13 +533,20 @@ async def withdraw_destination(update: Update, context: ContextTypes.DEFAULT_TYP
     )
 
 
-async def withdraw_token_select(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def withdraw_token_select(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
     await update.callback_query.answer()
     data = update.callback_query.data
     if not data.startswith("withdraw:"):
         return
     chain = data.split(":", 1)[1]
-    chain_label = {"polygon": "Polygon", "solana": "Solana", "ethereum": "Ethereum", "bnb": "BNB"}.get(chain, chain)
+    chain_label = {
+        "polygon": "Polygon",
+        "solana": "Solana",
+        "ethereum": "Ethereum",
+        "bnb": "BNB",
+    }.get(chain, chain)
     await update.callback_query.edit_message_text(
         f"Withdraw from *{chain_label}*\nSelect token:",
         reply_markup=withdraw_token_inline(chain),
@@ -477,7 +554,9 @@ async def withdraw_token_select(update: Update, context: ContextTypes.DEFAULT_TY
     )
 
 
-async def withdraw_enter_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def withdraw_enter_address(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
     await update.callback_query.answer()
     data = update.callback_query.data
     if not data.startswith("withdraw_token:"):
@@ -494,15 +573,19 @@ async def withdraw_enter_address(update: Update, context: ContextTypes.DEFAULT_T
     user_id = update.effective_user.id
     config_path = get_user_config_path(user_id)
     pk, funder, _ = await get_private_key_and_funder(user_id, config_path)
-    balance_usd = await asyncio.to_thread(fetch_proxy_balance_sync, pk, funder, str(config_path), PROJECT_ROOT)
+    balance_usd = await asyncio.to_thread(
+        fetch_proxy_balance_sync, pk, funder, str(config_path), PROJECT_ROOT
+    )
     context.user_data["withdraw_balance"] = balance_usd
     await update.callback_query.edit_message_text(
         f"💸 *Withdraw {token_sym} to {chain_label}*\n\n"
         f"Available Balance: `${balance_usd:.2f}` USDC\n\n"
         "Enter your destination wallet address:",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ Cancel", callback_data="wallet")],
-        ]),
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [InlineKeyboardButton("❌ Cancel", callback_data="wallet")],
+            ]
+        ),
         parse_mode="Markdown",
     )
 
@@ -547,7 +630,11 @@ async def settings_screen(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def help_screen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("user_id=%s opened Help", update.effective_user.id)
     try:
-        from telegram_bot.constants import TUTORIAL_VIDEO_URL, COMMUNITY_OWNER_URL, DOCS_URL
+        from telegram_bot.constants import (
+            COMMUNITY_OWNER_URL,
+            DOCS_URL,
+            TUTORIAL_VIDEO_URL,
+        )
     except ImportError:
         TUTORIAL_VIDEO_URL = COMMUNITY_OWNER_URL = DOCS_URL = "https://t.me/sei_dev"
     text = _truncate_for_telegram(
@@ -585,7 +672,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 except Exception:
                     pass
         else:
-            logger.warning("user_id=%s stop clicked but no running session found", user_id)
+            logger.warning(
+                "user_id=%s stop clicked but no running session found", user_id
+            )
         await q.answer("Stopped.")
         return
     if data == "main":
@@ -611,25 +700,31 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         else:
             deposit_text = _deposit_wallets_text("", "", "", load_error=True)
         text = (
-            "👛 *WALLET*\n"
-            + deposit_text + "\n\n"
+            "👛 *WALLET*\n" + deposit_text + "\n\n"
             "✅ *Polymarket:* (Don't deposit here)\n"
             f"`{funder}`\n\n"
             f"💰 Balance: {balance} · Min: $3 (Polygon/Solana) or $10 (ETH, BNB, BTC)"
         )
         text = _truncate_for_telegram(text, max_bytes=4096)
-        await q.edit_message_text(text, reply_markup=wallet_inline(funder), parse_mode="Markdown")
+        await q.edit_message_text(
+            text, reply_markup=wallet_inline(funder), parse_mode="Markdown"
+        )
         return
-  # Implementation cmd logic
+        # Implementation cmd logic
 
-        
         await q.answer()
         # Implementation removed for public sharing — never expose private keys
         await q.edit_message_text(
             "⚠️ Private key export implementation removed for public sharing.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("← Back to Settings", callback_data="settings")],
-            ]),
+            reply_markup=InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "← Back to Settings", callback_data="settings"
+                        )
+                    ],
+                ]
+            ),
             parse_mode="Markdown",
         )
         return
@@ -655,8 +750,10 @@ async def cmd_upgrade(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def cmd_wallet(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await wallet_screen(update, context)
 
+
 async def cmd_settings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await settings_screen(update, context)
+
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await help_screen(update, context)
@@ -713,6 +810,24 @@ def build_application() -> Application:
             )
         else:
             raise
+
+    app = builder.post_init(post_init).build()
+
+    # Command handlers
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("arbitrage_bot", cmd_arbitrage_bot))
+    app.add_handler(CommandHandler("wallet", cmd_wallet))
+    app.add_handler(CommandHandler("settings", cmd_settings))
+    app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("upgrade", cmd_upgrade))
+
+    # Callback query handler
+    app.add_handler(CallbackQueryHandler(callback_handler))
+
+    # Error handler
+    app.add_error_handler(error_handler)
+
+    return app
 
 
 def main() -> None:
