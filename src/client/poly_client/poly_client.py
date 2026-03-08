@@ -368,13 +368,33 @@ class PolyClient:
             logger.exception("get_order_books failed: %s", exc)
             return None
 
+    @staticmethod
+    def _extract_price(
+        value, fallback_keys=("price", "mid", "midpoint")
+    ) -> Optional[float]:
+        """Extract a float price from a scalar or dict response."""
+        if value is None:
+            return None
+        if isinstance(value, dict):
+            for key in fallback_keys:
+                if key in value:
+                    return float(value[key])
+            # Last resort: take the first numeric-looking value
+            for v in value.values():
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    continue
+            return None
+        return float(value)
+
     def get_midpoint(self, token_id: str) -> Optional[float]:
         """Return the midpoint price for a token."""
         if not self.client:
             return None
         try:
             mid = self.client.get_midpoint(token_id)
-            return float(mid) if mid is not None else None
+            return self._extract_price(mid)
         except Exception as exc:
             logger.exception("get_midpoint failed: %s", exc)
             return None
@@ -385,7 +405,7 @@ class PolyClient:
             return None
         try:
             p = self.client.get_price(token_id, side=side.upper())
-            return float(p) if p is not None else None
+            return self._extract_price(p)
         except Exception as exc:
             logger.exception("get_price failed: %s", exc)
             return None
